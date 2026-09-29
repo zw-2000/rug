@@ -65,6 +65,12 @@ class LdapAuthenticator:
             raise DirectoryUnavailable("set RUG_LDAP_NETBIOS_DOMAIN or RUG_LDAP_UPN_SUFFIX")
         if not settings.ldap_base_dn:
             raise DirectoryUnavailable("set RUG_LDAP_BASE_DN")
+        self.admin_group = ""
+        if settings.ldap_admin_group_dn:
+            try:
+                self.admin_group = normalize_dn(settings.ldap_admin_group_dn)
+            except ValueError as e:
+                raise DirectoryUnavailable(f"RUG_LDAP_ADMIN_GROUP_DN: {e}") from e
         encrypted = settings.ldap_url.lower().startswith("ldaps://") or settings.ldap_start_tls
         if not encrypted and not settings.ldap_allow_insecure:
             raise DirectoryUnavailable(
@@ -180,10 +186,9 @@ class LdapAuthenticator:
                 groups.add(normalize_dn(str(g)))
             except ValueError:
                 continue
-        admin_group = normalize_dn(self.s.ldap_admin_group_dn) if self.s.ldap_admin_group_dn else ""
         return Identity(
             username=username,
             display_name=_one(attrs.get("displayName")) or username,
             groups=frozenset(groups),
-            is_admin=bool(admin_group) and admin_group in groups,
+            is_admin=bool(self.admin_group) and self.admin_group in groups,
         )

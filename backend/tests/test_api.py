@@ -508,3 +508,28 @@ def test_size_cap_holds_without_a_content_length(engine, corpus, embedder):
     )
     assert r.status_code == 413
     assert sorted(p.name for p in env.docs_dir.rglob("*")) == before
+
+
+def test_throttle_counts_every_spelling_of_an_account_together(engine, corpus, embedder):
+    env = Env(engine, corpus, embedder, ldap_upn_suffix="corp.local")
+    c = env.client()
+    forms = ["ann", "CORP\\ann", "ann@corp.local", "ANN"]
+    for i in range(env.settings.login_max_failures_user):
+        r = c.post("/api/auth/login", json={"username": forms[i % 4], "password": "x"})
+        assert r.status_code == 401
+    r = c.post("/api/auth/login", json={"username": "ann@corp.local", "password": "pw-ann"})
+    assert r.status_code == 429
+    assert set(e for e in _actors(env, "login.fail")) == {"ann"}
+
+
+def _actors(env, action):
+    with env.factory() as db:
+        return [e.actor for e in audit.recent(db, 500, action=action)]
+
+
+def test_large_bodies_are_refused_on_every_route(env):
+    huge = {"username": "ann", "password": "x" * (200 * 1024)}
+    assert env.client().post("/api/auth/login", json=huge).status_code == 413
+    ann, csrf = env.login("ann")
+    big = {"group_dn": SALES, "folders": ["f"] * 100_000}
+    assert ann.put("/api/admin/groups", headers=csrf, json=big).status_code == 413

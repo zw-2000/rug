@@ -123,3 +123,43 @@ def test_misconfiguration_fails_at_startup(kw):
 def test_plaintext_allowed_only_explicitly_or_with_starttls():
     LdapAuthenticator(settings(ldap_url="ldap://dc", ldap_start_tls=True), lambda *_: None)  # type: ignore[arg-type,return-value]
     LdapAuthenticator(settings(ldap_url="ldap://dc", ldap_allow_insecure=True), lambda *_: None)  # type: ignore[arg-type,return-value]
+
+
+def test_real_connection_pins_tls_validation(monkeypatch):
+    import ssl
+
+    from ldap3 import Connection
+
+    events: list[str] = []
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(Connection, "start_tls", lambda self, *a, **k: events.append("starttls"))
+    monkeypatch.setattr(Connection, "bind", lambda self, *a, **k: events.append("bind"))
+
+    real_init = Connection.__init__
+
+    def init(self, *a, **k):
+        real_init(self, *a, **k)
+        seen["server"], seen["user"] = self.server, self.user
+        self.open = lambda *a, **k: events.append("open")  # `open` is set per instance
+
+    monkeypatch.setattr(Connection, "__init__", init)
+
+    LdapAuthenticator(settings(ldap_url="ldaps://dc.corp.local"))._real_connection(
+        "CORP\\ann", "pw"
+    )
+    server = seen["server"]
+    assert server.ssl and server.tls.validate == ssl.CERT_REQUIRED  # type: ignore[attr-defined]
+    assert events == ["open", "bind"] and seen["user"] == "CORP\\ann"
+
+    events.clear()
+    LdapAuthenticator(
+        settings(ldap_url="ldap://dc.corp.local", ldap_start_tls=True)
+    )._real_connection("CORP\\ann", "pw")
+    server = seen["server"]
+    assert not server.ssl and server.tls.validate == ssl.CERT_REQUIRED  # type: ignore[attr-defined]
+    assert events == ["open", "starttls", "bind"]  # encrypted before the password is sent
+
+
+def test_malformed_admin_group_fails_at_startup():
+    with pytest.raises(DirectoryUnavailable):
+        LdapAuthenticator(settings(ldap_admin_group_dn="not a dn"))

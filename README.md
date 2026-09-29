@@ -114,7 +114,8 @@ unanswerable, permission cases).
   applies at that user's next sign-in (or revoke their sessions).
   - The group key `*` means every signed-in user.
   - **Admins manage configuration and are granted no documents by default.** Give the admin group
-    folders like any other group.
+    folders like any other group. This is a default, not a security boundary: an admin can map
+    or allow any folder for themselves, and every such change is audited.
   - Files directly in the NAS root have the folder `""`; nobody sees them until an administrator
     maps `""`.
 - **Status codes.** Download: unknown id 404, existing document you may not access 403. Upload to
@@ -151,6 +152,13 @@ Endpoints: `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/me`,
   and **nested groups**: `memberOf` lists direct memberships only, so a user who is in a group
   only through another group is not matched, and the primary group (usually Domain Users) is not
   listed (map `*` for "everyone"). Test with a real account before relying on it.
+- Behind a reverse proxy, set `RUG_TRUSTED_PROXIES`; otherwise every client shares the proxy's
+  address and the per-address login limit becomes company-wide.
+- An upload's body is parsed (and spooled to the app's temp directory) before the folder check,
+  so a forbidden upload never touches the NAS but does briefly use temp space (capped at the
+  upload size limit). Every other request body is capped at 64 KB.
+- The leak matrix calls `Rag.ask` with folders from `effective_folders` directly; the
+  session → folders → ask wiring is tested once M4 adds the chat endpoint.
 - Requests run on synchronous database sessions; fine for a small team, revisit if the load grows.
 
 ## Development setup

@@ -32,6 +32,7 @@ from rug.uploads import UploadRejected, store
 
 log = logging.getLogger(__name__)
 
+DEFAULT_BODY_LIMIT = 64 * 1024  # every route except upload
 MULTIPART_OVERHEAD = 1024 * 1024  # form fields and boundaries on top of the file itself
 BAD_LOGIN = "Invalid username or password."
 
@@ -41,16 +42,20 @@ class _BodyTooLarge(Exception):
 
 
 class BodyLimit:
-    """Reject request bodies over `limit` bytes as they stream in. Starlette's multipart
-    parser has no file-size limit of its own, and Content-Length can be absent or a lie."""
+    """Reject request bodies over a limit as they stream in: `upload_limit` under
+    `upload_prefix`, `default_limit` everywhere else (JSON bodies are read whole into memory,
+    and sign-in needs no session). Starlette's multipart parser has no file-size limit of its
+    own, and Content-Length can be absent or a lie."""
 
-    def __init__(self, app: ASGIApp, limit: int, path_prefix: str):
-        self.app, self.limit, self.prefix = app, limit, path_prefix
+    def __init__(self, app: ASGIApp, default_limit: int, upload_limit: int, upload_prefix: str):
+        self.app, self.default, self.upload = app, default_limit, upload_limit
+        self.prefix = upload_prefix
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or not scope["path"].startswith(self.prefix):
+        if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        limit = self.upload if scope["path"].startswith(self.prefix) else self.default
         declared = dict(scope["headers"]).get(b"content-length")
         started = False
         seen = 0
@@ -60,7 +65,7 @@ class BodyLimit:
             msg = await receive()
             if msg["type"] == "http.request":
                 seen += len(msg.get("body", b""))
-                if seen > self.limit:
+                if seen > limit:
                     raise _BodyTooLarge
             return msg
 
@@ -69,8 +74,8 @@ class BodyLimit:
             started = started or msg["type"] == "http.response.start"
             await send(msg)
 
-        too_big = JSONResponse({"detail": "The upload is too large."}, status_code=413)
-        if declared is not None and declared.isdigit() and int(declared) > self.limit:
+        too_big = JSONResponse({"detail": "The request is too large."}, status_code=413)
+        if declared is not None and declared.isdigit() and int(declared) > limit:
             await too_big(scope, receive, send)
             return
         try:
@@ -110,7 +115,12 @@ def create_app(
     max_bytes = s.max_upload_mb * 1024 * 1024
 
     app = FastAPI(title="rug", docs_url=None, redoc_url=None, openapi_url=None)
-    app.add_middleware(BodyLimit, limit=max_bytes + MULTIPART_OVERHEAD, path_prefix="/api/upload")
+    app.add_middleware(
+        BodyLimit,
+        default_limit=DEFAULT_BODY_LIMIT,
+        upload_limit=max_bytes + MULTIPART_OVERHEAD,
+        upload_prefix="/api/upload",
+    )
 
     @app.middleware("http")
     async def headers(request: Request, call_next: Callable[..., Any]) -> Response:
@@ -167,8 +177,11 @@ def create_app(
         body: LoginBody, request: Request, response: Response, db: Session = Depends(get_db)
     ) -> dict[str, Any]:
         ip = ip_of(request)
-        who = sessions.throttle_key(body.username)
-        if sessions.login_blocked(db, s, body.username, ip):
+        try:  # ann, CORP\ann and ann@corp.local are one account, so one throttle bucket
+            who = auth.parse_username(body.username)
+        except AuthError:
+            who = sessions.throttle_key(body.username)
+        if sessions.login_blocked(db, s, who, ip):
             audit.log(db, who, "login.throttled", ip=ip)
             db.commit()
             raise HTTPException(
