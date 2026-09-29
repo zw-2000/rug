@@ -34,6 +34,7 @@ from rug.config import Settings, get_settings
 from rug.db.models import EMBED_DIM, Chunk, Document, IndexRun
 from rug.llm import Embedder
 from rug.loaders.base import LoaderEnvironmentError
+from rug.paths import safe_doc_path
 from rug.versions import version_key
 
 log = logging.getLogger(__name__)
@@ -90,6 +91,8 @@ def scan_disk(root: Path) -> dict[str, DiskFile]:
             except OSError:  # deleted or renamed between listing and stat
                 continue
             if not stat.S_ISREG(st.st_mode):  # symlinks, sockets, ...
+                continue
+            if st.st_size == 0:  # a reserved upload name or an empty save: never a valid document
                 continue
             rel = p.relative_to(root).as_posix()
             found[rel] = DiskFile(rel, st.st_size, st.st_mtime)
@@ -200,10 +203,7 @@ class Indexer:
 
     def _path(self, f: DiskFile) -> Path:
         """Re-check at open time that the file is still a regular file inside the root."""
-        p = self.root / f.rel
-        if p.is_symlink() or not p.resolve().is_relative_to(self.root.resolve()):
-            raise ValueError(f"refusing symlink or path outside the docs root: {f.rel}")
-        return p
+        return safe_doc_path(self.root, f.rel)
 
     def _sync_file(
         self,

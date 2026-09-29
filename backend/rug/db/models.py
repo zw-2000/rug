@@ -4,13 +4,17 @@ from typing import Any
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    ARRAY,
     BigInteger,
+    Boolean,
+    CheckConstraint,
     Computed,
     DateTime,
     Float,
     ForeignKey,
     Index,
     Integer,
+    PrimaryKeyConstraint,
     String,
     Text,
     func,
@@ -97,3 +101,68 @@ class IndexRun(Base):
     processed: Mapped[int] = mapped_column(Integer, default=0)
     counts: Mapped[dict[str, int]] = mapped_column(JSONB, default=dict)
     errors: Mapped[list[dict[str, str]]] = mapped_column(JSONB, default=list)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    username: Mapped[str] = mapped_column(Text, primary_key=True)
+    display_name: Mapped[str] = mapped_column(Text, default="")
+    first_login: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_login: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    disabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class SessionRow(Base):
+    __tablename__ = "sessions"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)  # sha256 of the cookie token
+    username: Mapped[str] = mapped_column(Text, index=True)
+    display_name: Mapped[str] = mapped_column(Text, default="")
+    groups: Mapped[list[str]] = mapped_column(ARRAY(Text))
+    is_admin: Mapped[bool] = mapped_column(Boolean)
+    csrf_token: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    ip: Mapped[str | None] = mapped_column(Text)
+
+
+class GroupFolder(Base):
+    __tablename__ = "group_folders"
+    __table_args__ = (PrimaryKeyConstraint("group_dn", "folder"),)
+
+    group_dn: Mapped[str] = mapped_column(Text)
+    folder: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class UserOverride(Base):
+    __tablename__ = "user_overrides"
+    __table_args__ = (
+        PrimaryKeyConstraint("username", "folder"),
+        CheckConstraint("effect IN ('allow', 'deny')", name="ck_user_overrides_effect"),
+    )
+
+    username: Mapped[str] = mapped_column(Text)
+    folder: Mapped[str] = mapped_column(Text)
+    effect: Mapped[str] = mapped_column(String(8))
+    created_by: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AuditEntry(Base):
+    """Append-only (a database trigger rejects UPDATE and DELETE)."""
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    actor: Mapped[str] = mapped_column(Text)
+    action: Mapped[str] = mapped_column(Text)
+    target: Mapped[str] = mapped_column(Text, default="")
+    detail: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    ip: Mapped[str | None] = mapped_column(Text)
