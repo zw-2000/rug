@@ -1,0 +1,25 @@
+# TLS: `tls internal` makes Caddy its own certificate authority (self-signed for browsers).
+# Pilot only. Before wider rollout use a certificate from the company CA:
+#     tls /etc/caddy/certs/rug.crt /etc/caddy/certs/rug.key
+# and mount the files into the caddy service.
+{$RUG_HOST:localhost} {
+	tls internal
+
+	# Answers stream as Server-Sent Events: forward each chunk immediately, never compress it.
+	@chat path /api/chat
+	handle @chat {
+		reverse_proxy app:8000 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		encode zstd gzip
+		reverse_proxy app:8000
+	}
+
+	header -Server
+	# Add HSTS only after a company-CA certificate is installed: with a self-signed pilot
+	# certificate it would remove the browser's "continue anyway" option.
+	#   header Strict-Transport-Security "max-age=31536000"
+}

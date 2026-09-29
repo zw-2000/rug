@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { getMe, logout, setUnauthorizedHandler, type Me } from "./api";
+import Admin from "./admin/Admin";
 import Chat from "./Chat";
 import Login from "./Login";
 import Upload from "./Upload";
 
-type Page = "chat" | "upload";
-const pageOf = (path: string): Page => (path.startsWith("/upload") ? "upload" : "chat");
+type Page = "chat" | "upload" | "admin";
+const pageOf = (path: string): Page =>
+  path.startsWith("/upload") ? "upload" : path.startsWith("/admin") ? "admin" : "chat";
+const pathOf = (p: Page): string => (p === "chat" ? "/" : `/${p}`);
 
 export default function App() {
   const [me, setMe] = useState<Me | null | undefined>(undefined); // undefined = still checking
@@ -26,7 +29,7 @@ export default function App() {
   }, []);
 
   const go = useCallback((p: Page) => {
-    window.history.pushState(null, "", p === "chat" ? "/" : "/upload");
+    window.history.pushState(null, "", pathOf(p));
     setPage(p);
   }, []);
 
@@ -54,6 +57,11 @@ export default function App() {
           <button className={page === "upload" ? "tab on" : "tab"} onClick={() => go("upload")}>
             Upload
           </button>
+          {me.is_admin && (
+            <button className={page === "admin" ? "tab on" : "tab"} onClick={() => go("admin")}>
+              Admin
+            </button>
+          )}
         </nav>
         <span className="who">
           {me.display_name || me.username}
@@ -70,12 +78,14 @@ export default function App() {
         </span>
       </header>
       <main>
-        {me.folders.length === 0 && (
+        {me.folders.length === 0 && page !== "admin" && (
           <p className="banner" role="status">
             You don&apos;t have access to any document folders yet. Ask an administrator.
           </p>
         )}
-        {page === "chat" ? <Chat /> : <Upload me={me} />}
+        {page === "chat" && <Chat />}
+        {page === "upload" && <Upload me={me} />}
+        {page === "admin" && (me.is_admin ? <Admin /> : <p className="error">Administrators only.</p>)}
       </main>
     </div>
   );

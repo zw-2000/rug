@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from eval.ldapmock import MockDirectory
+from harness.ldapmock import MockDirectory
 from rug import audit, perms
 from rug.api.app import create_app
 from rug.auth.ldap import LdapAuthenticator

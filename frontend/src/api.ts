@@ -212,3 +212,96 @@ export async function streamChat(
   }
   if (!finished && !signal.aborted) h.onError("The connection was interrupted. Try again.");
 }
+
+// ---- administration -------------------------------------------------------------------------
+
+export interface AdminConfig {
+  admin_group: string;
+  folders: string[];
+  groups: Record<string, string[]>;
+  overrides: { username: string; folder: string; effect: "allow" | "deny"; created_by: string }[];
+}
+
+export interface AdminUser {
+  username: string;
+  display_name: string;
+  first_login: string | null;
+  last_login: string | null;
+  disabled: boolean;
+  sessions: number;
+}
+
+export interface IndexRunInfo {
+  id: number;
+  started_at: string;
+  finished_at: string | null;
+  total: number;
+  processed: number;
+  counts: Record<string, number>;
+  errors: { path: string; error: string }[];
+  n_errors: number;
+}
+
+export interface IndexStatus {
+  scan_interval_s: number;
+  scanning: boolean;
+  documents: { ok: number; error: number };
+  summaries_pending: number;
+  runs: IndexRunInfo[];
+  broken: { path: string; error: string | null }[];
+}
+
+export interface QaRow {
+  id: number;
+  at: string;
+  username: string;
+  question: string;
+  status: string;
+  mode: string;
+  answer: string;
+  ungrounded: boolean;
+  latency_ms: number | null;
+  feedback: number | null;
+  comment: string | null;
+}
+
+export interface AuditRow {
+  id: number;
+  at: string;
+  actor: string;
+  action: string;
+  target: string;
+  detail: Record<string, unknown>;
+  ip: string | null;
+}
+
+const json = (body: unknown): RequestInit => ({
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+export const admin = {
+  config: () => request<AdminConfig>("/api/admin/config"),
+  setGroup: (group_dn: string, folders: string[]) =>
+    request<{ before: string[]; after: string[] }>("/api/admin/groups", { method: "PUT", ...json({ group_dn, folders }) }),
+  setOverride: (username: string, folder: string, effect: "allow" | "deny" | null) =>
+    request("/api/admin/overrides", { method: "PUT", ...json({ username, folder, effect }) }),
+  users: () => request<AdminUser[]>("/api/admin/users"),
+  userAction: (username: string, action: "disable" | "enable" | "revoke") =>
+    request(`/api/admin/users/${encodeURIComponent(username)}/${action}`, { method: "POST" }),
+  docTypes: () => request<Record<string, string[]>>("/api/admin/doc-types"),
+  putDocType: (name: string, phrases: string[]) =>
+    request("/api/admin/doc-types", { method: "PUT", ...json({ name, phrases }) }),
+  deleteDocType: (name: string) =>
+    request(`/api/admin/doc-types/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  index: () => request<IndexStatus>("/api/admin/index"),
+  scan: () => request("/api/admin/index/scan", { method: "POST" }),
+  qa: (feedback: number | null, before: number | null) =>
+    request<QaRow[]>(
+      `/api/admin/qa?limit=25${feedback ? `&feedback=${feedback}` : ""}${before ? `&before_id=${before}` : ""}`,
+    ),
+  audit: (action: string, before: number | null) =>
+    request<AuditRow[]>(
+      `/api/admin/audit?limit=25${action ? `&action=${encodeURIComponent(action)}` : ""}${before ? `&before_id=${before}` : ""}`,
+    ),
+};

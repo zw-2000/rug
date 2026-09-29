@@ -191,3 +191,13 @@ class QaLog(Base):
     comment: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (CheckConstraint("feedback IN (-1, 1)", name="ck_qa_log_feedback"),)
+
+
+class DocType(Base):
+    """A document type the resolver recognises in questions and filenames: `name` is the
+    canonical label (SOW), `phrases` are lower-case words or phrases that mean it."""
+
+    __tablename__ = "doc_types"
+
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    phrases: Mapped[list[str]] = mapped_column(ARRAY(Text))

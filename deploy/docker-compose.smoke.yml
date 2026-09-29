@@ -1,0 +1,29 @@
+# Smoke-test stack: the real Caddy and Postgres, but the app runs the TEST harness (mock
+# directory, fake models, synthetic corpus). No Ollama, no NAS, no real sign-in.
+#   docker compose -f docker-compose.yml -f docker-compose.smoke.yml --env-file smoke.env up -d --build
+services:
+  ollama:
+    profiles: ["never"]
+  ollama-pull:
+    profiles: ["never"]
+    env_file: !reset []
+  postgres:
+    environment:
+      POSTGRES_DB: rug_e2e
+  app:
+    build:
+      target: smoke
+    env_file: !reset []
+    environment:
+      RUG_DATABASE_URL: postgresql+psycopg://rug:${POSTGRES_PASSWORD}@postgres:5432/rug_e2e
+      RUG_E2E_DATABASE_URL: postgresql+psycopg://rug:${POSTGRES_PASSWORD}@postgres:5432/rug_e2e
+      RUG_TRUSTED_PROXIES: '["172.28.0.10/32"]'
+      RUG_DOCS_DIR: /tmp/rug-smoke-docs
+    volumes: !override []
+  worker:
+    profiles: ["never"]
+    env_file: !reset []
+  backup:
+    environment:
+      PGDATABASE: rug_e2e
+

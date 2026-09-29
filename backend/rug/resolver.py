@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from rug.catalog import DocRow, current_documents
 from rug.config import Settings, get_settings
+from rug.db.models import DocType
 from rug.ids import IdMatch, find_ids, id_set, strip_ids
 from rug.scope import Folders
 
@@ -151,6 +152,12 @@ def _features(doc: DocRow, vocab: dict[str, tuple[str, ...]]) -> _DocFeatures:
     return _DocFeatures(doc, ids, types, name_tokens(doc.version_key, vocab), title_tokens)
 
 
+def load_doc_types(db: Session) -> dict[str, tuple[str, ...]]:
+    """The administrator-edited vocabulary; the built-in defaults when there is none."""
+    rows = db.query(DocType.name, DocType.phrases).all()
+    return {r.name: tuple(r.phrases) for r in rows} or DEFAULT_DOC_TYPES
+
+
 class Resolver:
     def __init__(
         self,
@@ -160,7 +167,7 @@ class Resolver:
     ):
         self.db = db
         self.s = settings or get_settings()
-        self.vocab = doc_types or DEFAULT_DOC_TYPES
+        self.vocab = doc_types or load_doc_types(db)
 
     def resolve(self, query: str, *, folders: Folders) -> Resolution:
         docs = current_documents(self.db, folders=folders)

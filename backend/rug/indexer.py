@@ -133,6 +133,17 @@ class Indexer:
             lock_conn.execute(select(func.pg_advisory_unlock(_LOCK_KEY)))
             lock_conn.close()
 
+    def is_busy(self) -> bool:
+        """True while another process holds the indexer lock (a scan is running)."""
+        conn = self.db.get_bind().engine.connect()
+        try:
+            got = bool(conn.execute(select(func.pg_try_advisory_lock(_LOCK_KEY))).scalar())
+            if got:
+                conn.execute(select(func.pg_advisory_unlock(_LOCK_KEY)))
+            return not got
+        finally:
+            conn.close()
+
     def sync_one(self, rel: str) -> str:
         """Index a single file now (used right after an upload). Takes the same lock as a full
         run, so raises IndexerBusy while one is in progress: the next scan picks the file up.

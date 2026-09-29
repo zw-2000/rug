@@ -83,7 +83,50 @@ def serve(
     except (ConfigError, DirectoryUnavailable) as e:
         typer.echo(f"ERROR {e}", err=True)
         raise typer.Exit(1) from e
-    uvicorn.run(application, host=host, port=port)
+    # proxy_headers off: the app alone decides whose X-Forwarded-For to believe.
+    uvicorn.run(application, host=host, port=port, proxy_headers=False, server_header=False)
+
+
+@app.command()
+def worker() -> None:
+    """Keep the index current: scan the share and write summaries every RUG_SCAN_INTERVAL_S."""
+    import signal
+    import threading
+
+    from rug.llm import OllamaChat, OllamaEmbedder
+    from rug.worker import serve_forever
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    settings = get_settings()
+    embedder, chat = OllamaEmbedder(settings), OllamaChat(settings)
+    stop = threading.Event()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: stop.set())
+
+    def check_embedder() -> None:
+        embedder.check()
+
+    def check_chat() -> None:
+        chat.check()
+
+    serve_forever(
+        stop, make_session, embedder, chat, settings,
+        check_embedder=check_embedder, check_chat=check_chat,
+    )  # fmt: skip
+
+
+@app.command("export-feedback")
+def export_feedback(
+    out: Path = typer.Argument(..., help="YAML file to write"),
+    feedback: int = typer.Option(-1, help="-1 thumbs-down, 1 thumbs-up"),
+) -> None:
+    """Write logged questions as a skeleton for eval/golden.yaml (a person fills in `facts`)."""
+    from rug import qa_export
+
+    with make_session() as db:
+        items = qa_export.skeletons(db, feedback)
+    out.write_text(qa_export.to_yaml(items), encoding="utf-8")
+    typer.echo(f"wrote {len(items)} question(s) to {out}; review before adding them to the set")
 
 
 @app.command()

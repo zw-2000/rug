@@ -1,0 +1,135 @@
+# rug: Caddy (TLS) -> app (API + web UI) -> Postgres + Ollama, plus a worker and nightly backups.
+#
+#   cp .env.example .env   # fill in the values marked REQUIRED
+#   docker compose up -d --build
+#   docker compose --profile setup run --rm ollama-pull     # first time: download the models
+#
+# With an NVIDIA GPU add:  -f docker-compose.yml -f docker-compose.gpu.yml
+name: rug
+
+x-rug-env: &rug-env
+  RUG_DATABASE_URL: postgresql+psycopg://rug:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/rug
+  RUG_DOCS_DIR: /data/docs
+  RUG_OLLAMA_URL: http://ollama:11434
+  # Only Caddy (pinned to 172.28.0.10 below) may say who the real client is.
+  RUG_TRUSTED_PROXIES: '["172.28.0.10/32"]'
+
+x-rug-app: &rug-app
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+    target: ${RUG_BUILD_TARGET:-app}
+  image: rug-app:local
+  env_file: .env
+  environment: *rug-env
+  volumes:
+    # The NAS share, mounted on the host. Its uid/gid/modes must let user 10001 write to it:
+    # see "NAS mount" in the README.
+    - ${DOCS_DIR:?set DOCS_DIR in .env to the mounted NAS folder}:/data/docs
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: rug
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-rug}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rug -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    environment:
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "2"
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    profiles: ["setup"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: ollama:11434
+    entrypoint: ["sh", "-c", "ollama pull \"$$RUG_CHAT_MODEL\" && ollama pull \"$$RUG_EMBED_MODEL\""]
+    env_file: .env
+
+  app:
+    <<: *rug-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    <<: *rug-app
+    command: ["rug", "worker"]
+    healthcheck:
+      disable: true
+    depends_on:
+      app:
+        condition: service_healthy
+
+  backup:
+    image: pgvector/pgvector:pg16
+    environment:
+      PGHOST: postgres
+      PGUSER: rug
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      PGDATABASE: ${POSTGRES_DB:-rug}
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+      BACKUP_AT: ${BACKUP_AT:-02:30}
+    volumes:
+      - ./backup/backup.sh:/backup.sh:ro
+      - ./backup/restore.sh:/restore.sh:ro
+      - ${BACKUP_DIR:-./backups}:/backups
+    entrypoint: ["sh", "/backup.sh", "loop"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      RUG_HOST: ${RUG_HOST:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      default:
+        ipv4_address: 172.28.0.10
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+volumes:
+  pgdata:
+  ollama:
+  caddy_data:
+  caddy_config:

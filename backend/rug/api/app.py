@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from rug import audit, perms
+from rug.api.admin import register_admin
 from rug.api.chat import register_chat
 from rug.auth import sessions
 from rug.auth.ldap import AuthError, DirectoryUnavailable, LdapAuthenticator
@@ -393,6 +394,10 @@ def create_app(
         admin=admin,
         embedder=embedder,
         chat_model=chat_model,
+    )
+
+    register_admin(
+        app, s=s, factory=factory, get_db=get_db, admin=admin, ip_of=ip_of, embedder=embedder
     )
 
     # -- administration -----------------------------------------------------------------

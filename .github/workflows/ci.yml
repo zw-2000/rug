@@ -109,3 +109,21 @@ jobs:
         with:
           name: playwright-traces
           path: frontend/test-results
+
+  deploy:
+    # Builds the image and runs the real Caddy + Postgres containers with the test harness
+    # (mock directory, fake models): TLS, streaming through the proxy, cookies, client
+    # addresses, checksums, backup and restore. Not production sign-in, Ollama or a GPU.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compose files are valid
+        working-directory: deploy
+        run: |
+          touch .env
+          export POSTGRES_PASSWORD=x DOCS_DIR=/tmp
+          docker compose -f docker-compose.yml config -q
+          docker compose -f docker-compose.yml -f docker-compose.gpu.yml config -q
+          rm .env
+      - name: Smoke test
+        run: deploy/smoke.sh
