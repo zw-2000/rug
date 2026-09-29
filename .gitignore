@@ -8,3 +8,5 @@ __pycache__/
 # local document folders and data
 docs/
 data/
+build/
+dist/

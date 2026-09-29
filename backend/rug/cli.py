@@ -12,11 +12,12 @@ from rug.db import Chunk, Document, make_session
 
 app = typer.Typer(no_args_is_help=True, help="rug: local document Q&A")
 
-ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
+MIGRATIONS = Path(__file__).resolve().parent / "migrations"  # shipped inside the package
 
 
 def alembic_upgrade(url: str | None = None) -> None:
-    cfg = Config(str(ALEMBIC_INI))
+    cfg = Config()
+    cfg.set_main_option("script_location", str(MIGRATIONS))
     if url:
         cfg.attributes["url"] = url
     command.upgrade(cfg, "head")
@@ -30,9 +31,14 @@ def migrate() -> None:
 
 
 @app.command()
-def ingest(docs_dir: Path = typer.Option(None, help="Override RUG_DOCS_DIR")) -> None:
+def ingest(
+    docs_dir: Path = typer.Option(None, help="Override RUG_DOCS_DIR"),
+    allow_mass_delete: bool = typer.Option(
+        False, help="Allow a scan to delete more than RUG_MAX_DELETE_FRACTION of the catalog"
+    ),
+) -> None:
     """Scan the docs folder once and update the index."""
-    from rug.indexer import Indexer
+    from rug.indexer import Indexer, MassDeletionRefused
     from rug.llm import EmbeddingError, OllamaEmbedder
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -43,7 +49,14 @@ def ingest(docs_dir: Path = typer.Option(None, help="Override RUG_DOCS_DIR")) ->
         typer.echo(f"ERROR {e}", err=True)
         raise typer.Exit(1) from e
     with make_session() as db:
-        run = Indexer(db, embedder, docs_dir or get_settings().docs_dir).run()
+        indexer = Indexer(
+            db, embedder, docs_dir or get_settings().docs_dir, allow_mass_delete=allow_mass_delete
+        )
+        try:
+            run = indexer.run()
+        except MassDeletionRefused as e:
+            typer.echo(f"ERROR {e}", err=True)
+            raise typer.Exit(1) from e
         typer.echo(json.dumps({"run": run.id, "files": run.total, **run.counts}))
         for err in run.errors:
             typer.echo(f"ERROR {err['path']}: {err['error']}", err=True)

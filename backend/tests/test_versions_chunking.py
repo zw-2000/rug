@@ -78,3 +78,19 @@ def test_table_split_repeats_header():
     assert len(chunks) > 1
     assert all(c.text.startswith("Col\n") for c in chunks)
     assert all(len(c.text) <= 400 for c in chunks)
+
+
+def test_numeric_ids_are_not_dates():
+    assert version_key("PO 45001234.docx") != version_key("PO 45009999.docx")
+    assert version_key("MSA 20240501.docx") == version_key("MSA 2024-05-01 signed.docx") == "msa"
+    assert version_key("SOW 1.5.24.docx") == "sow"
+
+
+def test_oversized_table_row_keeps_header_on_every_piece():
+    long_row = "Col: " + " ".join(f"word{i}" for i in range(400))
+    chunks = chunk_sections([Section(f"Col\nCol: short\n{long_row}", (), "table")], 300, 0)
+    assert len(chunks) > 2
+    assert all(c.text.startswith("Col\n") for c in chunks)
+    assert all(len(c.text) <= 300 for c in chunks)
+    body = " ".join(c.text.split("\n", 1)[1] for c in chunks)
+    assert "Col: short" in body and "word399" in body

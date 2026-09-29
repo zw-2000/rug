@@ -10,7 +10,14 @@ from alembic import op
 from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects import postgresql
 
-from rug.db.models import EMBED_DIM, TSV_EXPR
+# Frozen copies of the values at the time of this revision. Never import them from
+# rug.db.models: a later change there must come with its own migration.
+EMBED_DIM = 768
+TSV_EXPR = (
+    "setweight(to_tsvector('english'::regconfig, heading_path), 'B') || "
+    "to_tsvector('english'::regconfig, text) || "
+    "to_tsvector('simple'::regconfig, heading_path || ' ' || text)"
+)
 
 revision = "0001"
 down_revision = None

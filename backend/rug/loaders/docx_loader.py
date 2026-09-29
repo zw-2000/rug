@@ -50,25 +50,31 @@ def _excluded(el: etree._Element, stop: etree._Element) -> bool:
     return False
 
 
-def element_text(el: etree._Element) -> str:
-    parts: list[str] = []
-    for node in el.iter(T_TEXT, T_TAB, T_BR, T_CR):
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _segments(el: etree._Element) -> Iterator[tuple[str, str]]:
+    """Yield ("text", chunk) and ("image", rId) in reading order, skipping deleted runs."""
+    for node in el.iter(T_TEXT, T_TAB, T_BR, T_CR, T_BLIP):
         if _excluded(node, el):
             continue
-        if node.tag == T_TEXT:
-            parts.append(node.text or "")
+        if node.tag == T_BLIP:
+            rid = node.get(_q(R, "embed"))
+            if rid:
+                yield "image", rid
+        elif node.tag == T_TEXT:
+            yield "text", node.text or ""
         else:
-            parts.append(" ")
-    return re.sub(r"\s+", " ", "".join(parts)).strip()
+            yield "text", " "
 
 
-def _image_rids(el: etree._Element) -> Iterator[str]:
-    for blip in el.iter(T_BLIP):
-        if _excluded(blip, el):
-            continue
-        rid = blip.get(_q(R, "embed"))
-        if rid:
-            yield rid
+def element_text(el: etree._Element) -> str:
+    return _norm("".join(v for kind, v in _segments(el) if kind == "text"))
+
+
+def _image_rids(el: etree._Element) -> list[str]:
+    return [v for kind, v in _segments(el) if kind == "image"]
 
 
 class DocxLoader:
@@ -80,13 +86,20 @@ class DocxLoader:
     def load(self, path: Path) -> LoadedDocument:
         if not zipfile.is_zipfile(path):
             raise ValueError("not a valid .docx (zip) file")
+        budget = get_settings().max_uncompressed_mb * 1024 * 1024
+        with zipfile.ZipFile(path) as z:
+            # zipfile never inflates a member past its declared size, so the header sum
+            # is a real bound on what parsing can decompress.
+            total = sum(info.file_size for info in z.infolist())
+        if total > budget:
+            raise ValueError(f"uncompressed size {total >> 20} MB exceeds budget {budget >> 20} MB")
         return _Walker(docx.Document(str(path))).run()
 
 
 class _Walker:
     def __init__(self, doc: DocxDocument):
         self.doc = doc
-        self.min_px = get_settings().ocr_min_px
+        self.s = get_settings()
         self.style_names = {s.style_id: s.name or "" for s in doc.styles}
         self.headings: list[tuple[int, str]] = []
         self.sections: list[Section] = []
@@ -125,21 +138,52 @@ class _Walker:
         return self.style_names.get(style.get(_q(W, "val")) or "", "")
 
     def _paragraph(self, p: etree._Element) -> None:
-        text = element_text(p)
         style = self._style_name(p)
-        if text and style.lower() == "title":
-            self.style_title = self.style_title or text
-        elif text and (m := _HEADING_RE.match(style)):
-            level = int(m.group(1))
-            while self.headings and self.headings[-1][0] >= level:
-                self.headings.pop()
-            self.headings.append((level, text))
-        elif text:
+        heading = _HEADING_RE.match(style)
+        if style.lower() == "title" or heading:
+            text = element_text(p)
+            if text and heading:
+                level = int(heading.group(1))
+                while self.headings and self.headings[-1][0] >= level:
+                    self.headings.pop()
+                self.headings.append((level, text))
+            elif text and self.style_title is None:
+                self.style_title = text
+            elif text:  # later Title-styled paragraphs are ordinary content
+                self.sections.append(Section(text, self.heading_path, "text"))
+            self._ocr_all(_image_rids(p))
+            return
+        # Body paragraph: emit text and OCR sections in reading order.
+        buf: list[str] = []
+        for kind, value in _segments(p):
+            if kind == "text":
+                buf.append(value)
+                continue
+            self._flush_text(buf)
+            self._ocr(value)
+        self._flush_text(buf)
+
+    def _flush_text(self, buf: list[str]) -> None:
+        text = _norm("".join(buf))
+        buf.clear()
+        if text:
             self.sections.append(Section(text, self.heading_path, "text"))
-        self._images(p)
 
     def _table(self, tbl: etree._Element) -> None:
-        rows: list[list[str]] = []
+        # A row containing images closes the current table section so the OCR text lands
+        # after that row; the next section repeats the header row.
+        header: list[str] | None = None
+        body: list[list[str]] = []
+        emitted = False
+
+        def flush() -> None:
+            nonlocal body, emitted
+            if header is not None and (body or not emitted):
+                text = _render_table([header, *body])
+                self.sections.append(Section(text, self.heading_path, "table"))
+                emitted = True
+            body = []
+
         carry: dict[int, str] = {}  # column -> text, for vertically merged cells
         for tr in tbl.iter(T_TR):
             if tr.getparent() is not tbl:  # nested tables are covered by the cell text
@@ -163,32 +207,43 @@ class _Walker:
                 row.append(text)
                 col += span
             if any(row):
-                rows.append(row)
-        if rows:
-            self.sections.append(Section(_render_table(rows), self.heading_path, "table"))
-        self._images(tbl)
+                if header is None:
+                    header = row
+                else:
+                    body.append(row)
+            rids = _image_rids(tr)
+            if rids:
+                flush()
+                self._ocr_all(rids)
+        flush()
 
-    def _images(self, el: etree._Element) -> None:
-        for rid in _image_rids(el):
-            part = self.doc.part.related_parts.get(rid)
-            if part is None:
-                continue
-            key = str(part.partname)
-            if key in self.seen_images:
-                continue
-            self.seen_images.add(key)
-            try:
-                text = ocr_image(part.blob, self.min_px)
-            except ImageSkipped as e:
-                log.debug("skip image %s: %s", key, e)
-                continue
-            except Exception as e:  # tesseract missing or crashed: keep the rest of the doc
-                self.warnings.append(f"OCR failed for {key}: {e}")
-                continue
-            if text:
-                self.sections.append(
-                    Section(f"[image text] {text}", self.heading_path, "image_text")
-                )
+    def _ocr_all(self, rids: list[str]) -> None:
+        for rid in rids:
+            self._ocr(rid)
+
+    def _ocr(self, rid: str) -> None:
+        part = self.doc.part.related_parts.get(rid)
+        if part is None:
+            return
+        key = str(part.partname)
+        if key in self.seen_images:
+            return
+        if len(self.seen_images) >= self.s.max_images_per_doc:
+            if len(self.seen_images) == self.s.max_images_per_doc:
+                self.warnings.append(f"only the first {self.s.max_images_per_doc} images OCR'd")
+                self.seen_images.add("<limit>")
+            return
+        self.seen_images.add(key)
+        try:
+            text = ocr_image(
+                part.blob, self.s.ocr_min_px, self.s.ocr_max_pixels, self.s.ocr_timeout_s
+            )
+        except ImageSkipped as e:
+            log.debug("skip image %s: %s", key, e)
+            return
+        # LoaderEnvironmentError (Tesseract missing) propagates: the indexer retries the file.
+        if text:
+            self.sections.append(Section(f"[image text] {text}", self.heading_path, "image_text"))
 
 
 def _render_table(rows: list[list[str]]) -> str:

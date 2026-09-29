@@ -100,3 +100,76 @@ def test_registry_is_upload_allow_list():
     assert not loaders.get_loader("x.docx").looks_valid(b"%PDF-1.7")
     with pytest.raises(loaders.UnsupportedFormat):
         loaders.get_loader("report.pdf")
+
+
+def test_inline_image_text_keeps_reading_order(tmp_path):
+    d = Document()
+    p = d.add_paragraph("Before the diagram.")
+    p.add_run().add_picture(_image("Primary site:\nMelbourne DC2", (900, 300)), width=Inches(5))
+    p.add_run(" After the diagram.")
+    kinds = [(s.kind, s.text) for s in loaders.load(_save(d, tmp_path / "i.docx")).sections]
+    assert [k for k, _ in kinds] == ["text", "image_text", "text"]
+    assert kinds[0][1] == "Before the diagram." and kinds[2][1] == "After the diagram."
+
+
+def test_image_in_table_row_lands_after_that_row(tmp_path):
+    d = Document()
+    t = d.add_table(rows=3, cols=2)
+    for cell, v in zip(t.rows[0].cells, ["Site", "Diagram"], strict=True):
+        cell.text = v
+    t.rows[1].cells[0].text = "DC2"
+    t.rows[1].cells[1].paragraphs[0].add_run().add_picture(
+        _image("Rack layout B7", (900, 300)), width=Inches(3)
+    )
+    t.rows[2].cells[0].text = "DR"
+    sections = loaders.load(_save(d, tmp_path / "t.docx")).sections
+    assert [s.kind for s in sections] == ["table", "image_text", "table"]
+    assert "Site: DC2" in sections[0].text and "DR" not in sections[0].text
+    assert "Rack layout B7" in sections[1].text
+    assert sections[2].text.startswith("Site | Diagram\n") and "DR" in sections[2].text
+
+
+def test_later_title_paragraphs_are_content(tmp_path):
+    d = Document()
+    d.add_paragraph("First Title", style="Title")
+    d.add_paragraph("Appendix Title", style="Title")
+    doc = loaders.load(_save(d, tmp_path / "a.docx"))
+    assert doc.title == "First Title"
+    assert [s.text for s in doc.sections] == ["Appendix Title"]
+
+
+def test_uncompressed_budget_rejects_zip_bombs(tmp_path, monkeypatch):
+    from rug.config import get_settings
+
+    d = Document()
+    d.add_paragraph("x" * 50_000)
+    path = _save(d, tmp_path / "big.docx")
+    monkeypatch.setattr(get_settings(), "max_uncompressed_mb", 0)
+    with pytest.raises(ValueError, match="exceeds budget"):
+        loaders.load(path)
+
+
+def test_image_count_capped(tmp_path, monkeypatch):
+    from rug.config import get_settings
+
+    d = Document()
+    for i in range(3):
+        d.add_picture(_image(f"Image number {i}", (900, 300)), width=Inches(4))
+    monkeypatch.setattr(get_settings(), "max_images_per_doc", 2)
+    doc = loaders.load(_save(d, tmp_path / "many.docx"))
+    assert sum(s.kind == "image_text" for s in doc.sections) == 2
+    assert any("first 2 images" in w for w in doc.warnings)
+
+
+def test_ocr_timeout_skips_image_but_keeps_document(tmp_path, monkeypatch):
+    import pytesseract
+
+    def slow(*a, **k):
+        raise RuntimeError("Tesseract process timeout")
+
+    d = Document()
+    d.add_paragraph("text survives")
+    d.add_picture(_image("never read", (900, 300)), width=Inches(4))
+    monkeypatch.setattr(pytesseract, "image_to_string", slow)
+    doc = loaders.load(_save(d, tmp_path / "slow.docx"))
+    assert [s.text for s in doc.sections] == ["text survives"]

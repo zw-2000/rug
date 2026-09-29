@@ -63,18 +63,25 @@ def _pack_prose(paragraphs: list[str], max_chars: int, overlap: int) -> list[str
 
 def _pack_table(table: str, max_chars: int) -> list[str]:
     header, *rows = table.split("\n")
+    header = header[: max_chars // 2]  # a pathological header must leave room for rows
+    room = max_chars - len(header) - 1
     chunks: list[str] = []
     cur = header
     for row in rows:
-        if len(cur) + 1 + len(row) > max_chars and cur != header:
+        if len(row) > room:
+            # One oversized row: split it alone and repeat the header on every piece.
+            if cur != header:
+                chunks.append(cur)
+            chunks.extend(f"{header}\n{piece}" for piece in _split_long(row, room))
+            cur = header
+            continue
+        if len(cur) + 1 + len(row) > max_chars:
             chunks.append(cur)
             cur = header
         cur = f"{cur}\n{row}"
-    chunks.append(cur)
-    out: list[str] = []
-    for piece in chunks:
-        out.extend(_split_long(piece, max_chars) if len(piece) > max_chars else [piece])
-    return out
+    if cur != header or not chunks:
+        chunks.append(cur)
+    return chunks
 
 
 def chunk_sections(sections: list[Section], max_chars: int, overlap: int) -> list[Chunk]:

@@ -2,12 +2,15 @@ import os
 import shutil
 from pathlib import Path
 
+import pytesseract
 import pytest
+from conftest import FakeEmbedder
 from docx import Document as Docx
 from sqlalchemy import func, select, text
 
+from rug.config import Settings
 from rug.db.models import Chunk, Document
-from rug.indexer import _LOCK_KEY, Indexer, IndexerBusy
+from rug.indexer import _LOCK_KEY, Indexer, IndexerBusy, MassDeletionRefused
 
 
 def make_docx(path: Path, body: str, mtime: float | None = None) -> Path:
@@ -66,7 +69,8 @@ def test_full_lifecycle(db, embedder, docs_dir):
     assert embedder.calls == calls
     assert docs_by_path(db)["sales/Alpha SOW.docx"].mtime == 1_800_000_000
 
-    # Rename within folder: same document row, same chunks, title follows filename.
+    # Rename within folder: same document row and chunk ids; the filename-derived title
+    # changed, so vectors (which embed the title) are refreshed in place.
     p.rename(docs_dir / "sales" / "Alpha SOW v2.docx")
     r = run(db, embedder, docs_dir)
     assert r.counts == {"moved": 1, "unchanged": 1}
@@ -75,7 +79,8 @@ def test_full_lifecycle(db, embedder, docs_dir):
     assert moved.id == alpha.id
     assert moved.title == "Alpha SOW v2" and moved.version_key == "alpha sow"
     assert chunk_ids(db, moved) == alpha_chunks
-    assert embedder.calls == calls
+    assert embedder.calls == calls + 1
+    calls = embedder.calls
 
     # Move to another permission folder: folder is re-tagged, chunks untouched.
     (docs_dir / "legal").mkdir()
@@ -97,13 +102,13 @@ def test_full_lifecycle(db, embedder, docs_dir):
     assert any("Completely new" in t for t in texts)
     calls = embedder.calls
 
-    # Copy: new document, chunks cloned without embedding.
-    shutil.copy2(docs_dir / "sales" / "Beta SOW.docx", docs_dir / "legal" / "Beta SOW copy.docx")
+    # Copy under the same filename: chunks cloned, nothing embedded.
+    shutil.copy2(docs_dir / "sales" / "Beta SOW.docx", docs_dir / "legal" / "Beta SOW.docx")
     r = run(db, embedder, docs_dir)
     assert r.counts == {"copied": 1, "unchanged": 2}
     assert embedder.calls == calls
     docs = docs_by_path(db)
-    beta, copy = docs["sales/Beta SOW.docx"], docs["legal/Beta SOW copy.docx"]
+    beta, copy = docs["sales/Beta SOW.docx"], docs["legal/Beta SOW.docx"]
     assert copy.id != beta.id and copy.sha256 == beta.sha256
     assert len(chunk_ids(db, copy)) == len(chunk_ids(db, beta))
 
@@ -158,3 +163,134 @@ def test_concurrent_run_refused(db, embedder, docs_dir, engine):
                 run(db, embedder, docs_dir)
         finally:
             other.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": _LOCK_KEY})
+
+
+def test_rename_keeps_vectors_when_title_is_not_from_filename(db, embedder, docs_dir):
+    p = docs_dir / "sales" / "a.docx"
+    p.parent.mkdir(parents=True)
+    d = Docx()
+    d.add_paragraph("Real Title", style="Title")
+    d.add_paragraph("body")
+    d.save(str(p))
+    run(db, embedder, docs_dir)
+    calls = embedder.calls
+    p.rename(docs_dir / "sales" / "b.docx")
+    assert run(db, embedder, docs_dir).counts == {"moved": 1}
+    assert embedder.calls == calls
+    assert docs_by_path(db)["sales/b.docx"].title == "Real Title"
+
+
+def test_copy_with_new_filename_title_reembeds(db, embedder, docs_dir):
+    make_docx(docs_dir / "sales" / "Beta.docx", "beta")
+    run(db, embedder, docs_dir)
+    calls = embedder.calls
+    shutil.copy2(docs_dir / "sales" / "Beta.docx", docs_dir / "sales" / "Gamma.docx")
+    assert run(db, embedder, docs_dir).counts == {"copied": 1, "unchanged": 1}
+    assert embedder.calls == calls + 1
+    assert docs_by_path(db)["sales/Gamma.docx"].title == "Gamma"
+
+
+def test_unmounted_share_refuses_to_wipe_index(db, embedder, docs_dir):
+    for i in range(3):
+        make_docx(docs_dir / "sales" / f"d{i}.docx", f"doc {i}")
+    run(db, embedder, docs_dir)
+    shutil.rmtree(docs_dir / "sales")  # empty mount point
+    with pytest.raises(MassDeletionRefused, match="Is the NAS share mounted"):
+        run(db, embedder, docs_dir)
+    assert len(docs_by_path(db)) == 3
+    # Deleting most (but not all) documents is also refused unless explicitly allowed.
+    for i in range(3):
+        make_docx(docs_dir / "sales" / f"d{i}.docx", f"doc {i}")
+    run(db, embedder, docs_dir)
+    for i in range(2):
+        (docs_dir / "sales" / f"d{i}.docx").unlink()
+    with pytest.raises(MassDeletionRefused):
+        run(db, embedder, docs_dir)
+    r = Indexer(db, embedder, docs_dir, allow_mass_delete=True).run()
+    assert r.counts == {"deleted": 2, "unchanged": 1}
+
+
+def test_load_failures_are_listed_in_run_errors(db, embedder, docs_dir):
+    (docs_dir / "sales").mkdir()
+    (docs_dir / "sales" / "broken.docx").write_bytes(b"not a zip")
+    r = run(db, embedder, docs_dir)
+    assert r.errors == [
+        {"path": "sales/broken.docx", "error": "load failed: not a valid .docx (zip) file"}
+    ]
+
+
+def test_db_error_on_chunk_insert_fails_only_that_file(db, docs_dir):
+    class WrongDim(FakeEmbedder):
+        def embed_documents(self, texts):
+            if any("poison" in t for t in texts):
+                return [[0.1, 0.2] for _ in texts]  # wrong dimension -> insert error
+            return super().embed_documents(texts)
+
+    make_docx(docs_dir / "sales" / "a poison.docx", "x")
+    make_docx(docs_dir / "sales" / "b ok.docx", "y")
+    r = Indexer(db, WrongDim(), docs_dir).run()
+    assert r.counts == {"failed": 1, "added": 1}
+    assert r.finished_at is not None
+    assert [e["path"] for e in r.errors] == ["sales/a poison.docx"]
+    assert set(docs_by_path(db)) == {"sales/b ok.docx"}
+
+
+def test_embed_dim_mismatch_rejected_up_front(db, embedder, docs_dir):
+    with pytest.raises(ValueError, match="RUG_EMBED_DIM=1024"):
+        Indexer(db, embedder, docs_dir, settings=Settings(embed_dim=1024))
+
+
+def test_tesseract_outage_is_retried_not_recorded(db, embedder, docs_dir, monkeypatch):
+    from eval.synthetic_gen import _image
+
+    p = docs_dir / "sales" / "img.docx"
+    p.parent.mkdir(parents=True)
+    d = Docx()
+    d.add_picture(_image("Melbourne DC2", (900, 300)))
+    d.save(str(p))
+
+    def missing(*a, **k):
+        raise pytesseract.TesseractNotFoundError()
+
+    monkeypatch.setattr(pytesseract, "image_to_string", missing)
+    r = run(db, embedder, docs_dir)
+    assert r.counts == {"failed": 1} and "Tesseract is not installed" in r.errors[0]["error"]
+    assert docs_by_path(db) == {}  # nothing recorded, so the next run retries
+    monkeypatch.undo()
+    assert run(db, embedder, docs_dir).counts == {"added": 1}
+
+
+def test_symlinks_are_not_followed(db, embedder, docs_dir, tmp_path):
+    outside = make_docx(tmp_path / "outside" / "secret.docx", "secret")
+    legal = make_docx(docs_dir / "legal" / "contract.docx", "legal only")
+    (docs_dir / "sales").mkdir()
+    (docs_dir / "sales" / "secret.docx").symlink_to(outside)
+    (docs_dir / "sales" / "contract.docx").symlink_to(legal)
+    (docs_dir / "sales" / "linked_dir").symlink_to(tmp_path / "outside", target_is_directory=True)
+    run(db, embedder, docs_dir)
+    assert set(docs_by_path(db)) == {"legal/contract.docx"}
+
+
+def test_file_vanishing_mid_scan_is_ignored(docs_dir, monkeypatch):
+    from rug import indexer as indexer_mod
+
+    make_docx(docs_dir / "sales" / "a.docx", "a")
+    make_docx(docs_dir / "sales" / "b.docx", "b")
+    real_lstat = Path.lstat
+
+    def flaky(self):
+        if self.name == "a.docx":
+            raise FileNotFoundError(self)
+        return real_lstat(self)
+
+    monkeypatch.setattr(Path, "lstat", flaky)
+    assert set(indexer_mod.scan_disk(docs_dir)) == {"sales/b.docx"}
+
+
+def test_renaming_every_file_is_not_a_mass_delete(db, embedder, docs_dir):
+    for i in range(3):
+        make_docx(docs_dir / "sales" / f"d{i}.docx", f"doc {i}")
+    run(db, embedder, docs_dir)
+    (docs_dir / "sales").rename(docs_dir / "delivery")  # folder restructure
+    assert run(db, embedder, docs_dir).counts == {"moved": 3}
+    assert {d.folder for d in docs_by_path(db).values()} == {"delivery"}

@@ -12,8 +12,9 @@ from pathlib import PurePosixPath
 _MARKERS = [
     r"\bcopy of\b",  # before the bare "copy" alternative so "of" isn't left behind
     r"\(\s*\d+\s*\)",  # "(1)" copy suffixes
-    r"\b\d{4}[-_.]?\d{2}[-_.]?\d{2}\b",  # 2024-05-01, 20240501
-    r"\b\d{1,2}[-_.]\d{1,2}[-_.]\d{2,4}\b",  # 01.05.2024, 1-5-24
+    # Only plausible dates, so IDs like "PO 45001234" are not mistaken for dates.
+    r"\b(?:19|20)\d{2}[-_.]?(?:0[1-9]|1[0-2])[-_.]?(?:0[1-9]|[12]\d|3[01])\b",  # 2024-05-01
+    r"\b(?:0?[1-9]|[12]\d|3[01])[-_.](?:0?[1-9]|1[0-2])[-_.](?:19|20)?\d{2}\b",  # 01.05.2024
     r"\bv(?:er(?:sion)?)?\s*\d+(?:\.\d+)*\b",  # v2, v1.3, ver 2, version 3
     r"\brev(?:ision)?\s*\d+\b",
     r"\b(?:final|draft|copy|latest|updated|signed|clean|redline|executed|approved)\b",

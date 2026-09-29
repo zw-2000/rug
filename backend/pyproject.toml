@@ -31,6 +31,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["rug*", "eval*"]
 
+[tool.setuptools.package-data]
+"rug.migrations" = ["script.py.mako"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

@@ -5,6 +5,11 @@ from typing import Literal, Protocol
 SectionKind = Literal["text", "table", "image_text"]
 
 
+class LoaderEnvironmentError(RuntimeError):
+    """The machine can't process files right now (e.g. Tesseract missing). Unlike a bad
+    file, this must not be recorded against the document: the file is retried next run."""
+
+
 @dataclass
 class Section:
     """One block of document content, in reading order."""
