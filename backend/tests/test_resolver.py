@@ -133,3 +133,34 @@ def test_identical_duplicates_of_the_newest_version_are_not_a_tie(db, embedder, 
     Indexer(db, embedder, docs_dir).run()
     res = Resolver(db).resolve("Vega SOW SR-6000", folders={"sales"})
     assert res.kind == "single" and res.doc.filename == "Vega SOW SR-6000.docx"
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        # Amounts and terms look like "letters + number" but are not document IDs.
+        ("Are the payment terms net 45 in the Atlas Retail SOW?", "Atlas Retail SR-4410 SOW.docx"),
+        ("Does the Harbor Logistics SOW mention AUD 18,400?", "Harbor Logistics SR-2210 SOW.docx"),
+        (
+            "Is the fixed fee AUD 96,000 in the Boost Connectivity SOW?",
+            "Boost Connectivity SR-1089 SOW.docx",
+        ),
+        ("Does the Pinecrest Health SOW follow ISO 27001?", "Pinecrest Health SR-3301 SOW.docx"),
+    ],
+)
+def test_stray_letters_plus_number_in_a_question_are_not_document_ids(corpus, query, expected):
+    res = resolve(corpus, query)
+    assert res.kind == "single", (
+        query,
+        res.kind,
+        [(c.doc.filename, round(c.score, 2)) for c in res.scored[:3]],
+    )
+    assert names(res) == [expected]
+    # and they stay in the text used for retrieval
+    assert res.ids == []
+
+
+def test_ids_are_only_recognised_in_series_the_scope_uses(corpus):
+    res = resolve(corpus, "SR-1098 net 45 GST 10")
+    assert [m.norm for m in res.ids] == ["SR1098"]
+    assert "net 45" in res.topic and "GST 10" in res.topic

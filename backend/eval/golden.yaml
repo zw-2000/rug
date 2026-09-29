@@ -127,6 +127,15 @@ questions:
      q: "when is go-live for sr2210",
      facts: [["8 March 2027"]]}
 
+  # Stray "letters + number" (net 45, AUD 96,000) must not be mistaken for document IDs.
+  # Added after review, i.e. not used to tune the resolver thresholds.
+  - {id: n-stray-net45, kind: named, doc: "Atlas Retail SR-4410 SOW.docx",
+     q: "Are the payment terms net 45 in the Atlas Retail SOW?",
+     facts: [["net 45"]], absent: ["net 30"]}
+  - {id: n-stray-aud, kind: named, doc: "Boost Connectivity SR-1089 SOW.docx",
+     q: "Is the fixed fee AUD 96,000 in the Boost Connectivity SOW?",
+     facts: [["96,000"]]}
+
   # ---- the document is not named: find it ----------------------------------------------
   - {id: f-sdwan, kind: find, doc: "Boost Connectivity SR-1089 SOW.docx",
      q: "Which SOW covers the SD-WAN migration?", facts: [["SD-WAN"]]}
@@ -140,6 +149,8 @@ questions:
      q: "Which change request extends the rollout to Geelong?", facts: [["Geelong"]]}
   - {id: f-liability, kind: find, doc: "Boost Connect MSA 2025.docx",
      q: "Which agreement caps liability at AUD 2,000,000?", facts: [["liability"]]}
+  - {id: f-net45, kind: find, doc: "Atlas Retail SR-4410 SOW.docx",
+     q: "Which SOW has payment terms of net 45?", facts: [["net 45"]]}
   - {id: f-nsw, kind: find, doc: "Contoso Mutual NDA.docx",
      q: "Which agreement is governed by New South Wales law?", facts: [["New South Wales"]]}
 

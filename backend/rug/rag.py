@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from rug.catalog import DocRow, documents_by_id, fetch_document
 from rug.config import Settings, get_settings
-from rug.ids import find_ids, strip_ids
+from rug.ids import IdMatch, strip_ids
 from rug.llm import ChatModel, Embedder
 from rug.resolver import Candidate, Resolver
 from rug.scope import Folders, folder_list
@@ -151,7 +151,7 @@ class Rag:
             doc = fetch_document(self.db, pinned, folders=folders)
             if doc is None:
                 raise DocumentNotAvailable(str(pinned))
-            ids = [m.norm for m in find_ids(query, self.s.id_pattern)]
+            ids = self.resolver.series_ids(query, folders=folders)
             return self._named(query, doc, query, ids, folders, "pinned", on_token)
 
         res = self.resolver.resolve(query, folders=folders)
@@ -166,7 +166,7 @@ class Rag:
             )
         if res.kind == "single" and res.doc is not None:
             return self._named(query, res.doc, res.topic, [], folders, "named", on_token)
-        return self._find(query, res.scored, folders, on_token)
+        return self._find(query, res.scored, res.ids, folders, on_token)
 
     # -- named document -------------------------------------------------------------------
 
@@ -175,19 +175,19 @@ class Rag:
         query: str,
         doc: DocRow,
         topic: str,
-        ids: Sequence[str],
+        ids: Sequence[IdMatch],
         folders: frozenset[str],
         mode: str,
         on_token: Callable[[str], None] | None,
     ) -> Answer:
         overview = is_overview(query, topic)
-        search_text = strip_ids(topic) if ids else topic
+        search_text = strip_ids(topic, list(ids)) if ids else topic
         search_text = search_text if re.search(r"[A-Za-z]{3}", search_text) else query
         hits = self.search.hybrid(
             folders=folders,
             query_text=search_text,
             query_vec=self.embedder.embed_query(search_text),
-            ids=ids,
+            ids=[m.norm for m in ids],
             doc_ids=[doc.id],
         )
         summary = None
@@ -204,11 +204,11 @@ class Rag:
         self,
         query: str,
         name_scored: Sequence[Candidate],
+        matches: Sequence[IdMatch],
         folders: frozenset[str],
         on_token: Callable[[str], None] | None,
     ) -> Answer:
-        matches = find_ids(query, self.s.id_pattern)
-        text = strip_ids(query, matches)
+        text = strip_ids(query, list(matches))
         vec = self.embedder.embed_query(text if re.search(r"[A-Za-z]{3}", text) else query)
         hits = self.search.hybrid(
             folders=folders,

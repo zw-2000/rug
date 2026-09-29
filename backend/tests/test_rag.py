@@ -169,3 +169,15 @@ def test_overview_detection():
     assert is_overview("Boost SOW", topic="")  # only a name given: describe the document
     assert is_overview("summarise the SOW")
     assert not is_overview("what is the total fee?")
+
+
+def test_amounts_and_terms_stay_in_the_retrieval_text(corpus):
+    """ "net 45" looks like an ID but is a search term: it must reach the search, in find mode
+    and when a document is pinned."""
+    chat = FakeChat(lambda m: "Payment is net 45 [1].")
+    found = rag(corpus, chat).ask("Which SOW has payment terms of net 45?", folders=ALL)
+    assert found.mode == "find" and found.sources[0].filename == "Atlas Retail SR-4410 SOW.docx"
+
+    atlas = corpus.id("delivery/Atlas Retail SR-4410 SOW.docx")
+    pinned = rag(corpus, chat).ask("payment terms net 45", folders=ALL, pinned=atlas)
+    assert pinned.mode == "pinned" and any("net 45" in e.text for e in pinned.excerpts)

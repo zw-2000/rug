@@ -99,10 +99,15 @@ def test_index_scope_under_delivery_falls_back_to_exact(corpus):
     """A near-useless index (ef_search=1) under a folder filter must not shrink results."""
     exact = PgSearch(corpus.db, Settings(exact_scan_max_chunks=10_000))
     tiny_index = PgSearch(corpus.db, Settings(exact_scan_max_chunks=0, hnsw_ef_search=1))
-    corpus.db.execute(text("SET LOCAL enable_seqscan = off"))
     want = hybrid(corpus, "Wi-Fi rollout sites", folders={"sales"}, search=exact, limit=8)
+    assert exact.last_vector_mode == "exact"
+
+    # Make an index-ordered plan the only cheap option (tiny tables never pick HNSW by cost),
+    # then check the index really was used, came up short, and the fallback repaired it.
+    corpus.db.execute(text("SET LOCAL enable_seqscan = off"))
+    corpus.db.execute(text("SET LOCAL enable_sort = off"))
     got = hybrid(corpus, "Wi-Fi rollout sites", folders={"sales"}, search=tiny_index, limit=8)
-    assert tiny_index.last_vector_mode in {"index", "index+exact-fallback"}
+    assert tiny_index.last_vector_mode == "index+exact-fallback"
     assert [h.chunk_id for h in got] == [h.chunk_id for h in want]
 
 

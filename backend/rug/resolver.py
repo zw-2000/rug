@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from rug.catalog import DocRow, current_documents
 from rug.config import Settings, get_settings
-from rug.ids import find_ids, id_set, strip_ids
+from rug.ids import IdMatch, find_ids, id_set, strip_ids
 from rug.scope import Folders
 
 DEFAULT_DOC_TYPES: dict[str, tuple[str, ...]] = {
@@ -59,6 +59,8 @@ class Resolution:
     topic: str = ""  # the question with the document reference removed
     unknown_ids: list[str] = field(default_factory=list)
     scored: list[Candidate] = field(default_factory=list)  # weak name signal for find-the-doc
+    # IDs recognised in the question: only series this scope actually uses (see resolve()).
+    ids: list[IdMatch] = field(default_factory=list)
 
     @property
     def doc(self) -> DocRow | None:
@@ -164,7 +166,12 @@ class Resolver:
         docs = current_documents(self.db, folders=folders)
         feats = [_features(d, self.vocab) for d in docs]
 
-        q_matches = find_ids(query, self.s.id_pattern)
+        # "net 45", "AUD 18,400" or "ISO 27001" have the shape of an ID but are ordinary words.
+        # A token is only an ID when its letter prefix is a series some visible document uses
+        # (SR-, CR-, ...); everything else stays in the text as plain words.
+        known_ids = frozenset().union(*(f.ids for f in feats)) if feats else frozenset()
+        known_prefixes = {re.sub(r"\d+$", "", i) for i in known_ids}
+        q_matches = [m for m in find_ids(query, self.s.id_pattern) if m.prefix in known_prefixes]
         q_ids = frozenset(m.norm for m in q_matches)
         q_tokens = set(name_tokens(query, self.vocab))
         # Type words the user typed ("change request", "SOW") are stronger evidence than types
@@ -173,12 +180,8 @@ class Resolver:
         q_types = typed | {m.prefix for m in q_matches if m.prefix in self.vocab}
 
         # A named ID from a series this scope uses, but that no visible document carries.
-        known_ids = frozenset().union(*(f.ids for f in feats)) if feats else frozenset()
-        known_prefixes = {re.sub(r"\d+$", "", i) for i in known_ids}
         if q_ids and not (q_ids & known_ids):
-            unknown = sorted(i for i in q_ids if re.sub(r"\d+$", "", i) in known_prefixes)
-            if unknown:
-                return Resolution("unknown_id", topic=query, unknown_ids=unknown)
+            return Resolution("unknown_id", topic=query, unknown_ids=sorted(q_ids), ids=q_matches)
 
         df: Counter[str] = Counter()
         for f in feats:
@@ -209,19 +212,30 @@ class Resolver:
         weak = [c for c in scored if c.score >= 0.2][:20]
 
         if not scored:
-            return Resolution("none", topic=query)
+            return Resolution("none", topic=query, ids=q_matches)
         top = scored[0]
         needed = self.s.resolver_accept_id if top.id_match else self.s.resolver_accept_named
         if top.score < needed:
-            return Resolution("none", topic=query, scored=weak)
+            return Resolution("none", topic=query, scored=weak, ids=q_matches)
 
         close = [c for c in scored if c.score >= top.score - self.s.resolver_margin]
         close = close[: self.s.resolver_max_candidates]
         if len(close) > 1:
-            return Resolution("ambiguous", close, topic=query, scored=weak)
+            return Resolution("ambiguous", close, topic=query, scored=weak, ids=q_matches)
         return Resolution(
-            "single", close, topic=self._topic(query, q_matches, top.doc), scored=weak
+            "single",
+            close,
+            topic=self._topic(query, q_matches, top.doc),
+            scored=weak,
+            ids=q_matches,
         )
+
+    def series_ids(self, query: str, *, folders: Folders) -> list[IdMatch]:
+        """IDs in `query` that belong to a series used by documents in scope (for callers that
+        skip resolution, e.g. a pinned document)."""
+        feats = [_features(d, self.vocab) for d in current_documents(self.db, folders=folders)]
+        prefixes = {re.sub(r"\d+$", "", i) for f in feats for i in f.ids}
+        return [m for m in find_ids(query, self.s.id_pattern) if m.prefix in prefixes]
 
     def _topic(self, query: str, q_matches, doc: DocRow) -> str:  # type: ignore[no-untyped-def]
         """The question minus the words that only named the document.
