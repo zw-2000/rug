@@ -4,10 +4,10 @@ import uuid
 import docx
 import pytest
 from fastapi.testclient import TestClient
-from ldapmock import MockDirectory
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
+from eval.ldapmock import MockDirectory
 from rug import audit, perms
 from rug.api.app import create_app
 from rug.auth.ldap import LdapAuthenticator
@@ -37,7 +37,7 @@ def small_docx(text="hello") -> bytes:
 
 
 class Env:
-    def __init__(self, engine, corpus, embedder, **overrides):
+    def __init__(self, engine, corpus, embedder, chat_model=None, **overrides):
         self.engine, self.corpus, self.docs_dir = engine, corpus, corpus.docs_dir
         self.directory = MockDirectory(USERS)
         self.settings = Settings(
@@ -56,6 +56,7 @@ class Env:
             session_factory=self.factory,
             authenticator=LdapAuthenticator(self.settings, self.directory),
             embedder=embedder,
+            chat_model=chat_model,
         )
         with self.factory() as db:  # who sees what
             perms.set_group_folders(db, "setup", SALES, ["sales"])
@@ -95,6 +96,7 @@ def test_login_sets_a_locked_down_cookie(env):
     assert r.status_code == 200
     body = r.json()
     assert body["username"] == "ann" and body["folders"] == ["sales"] and not body["is_admin"]
+    assert body["upload_types"] == [".docx"] and body["max_upload_mb"] == 50
     cookie = r.headers["set-cookie"].lower()
     assert "httponly" in cookie and "secure" in cookie and "samesite=lax" in cookie
     assert c.get("/api/me").json()["username"] == "ann"

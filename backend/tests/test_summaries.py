@@ -134,3 +134,28 @@ def test_a_content_derived_title_is_still_given_to_the_summariser(db, embedder, 
     chat = FakeChat("ok")
     summarize_pending(db, chat, embedder)
     assert "Northwind Cold-Chain SOW" in chat.calls[0][1]["content"]  # same bytes, same title
+
+
+def test_summaries_wait_while_a_question_is_being_asked(corpus, embedder):
+    from rug.db.models import QaLog
+    from rug.summaries import live_questions_active, summarize_pending
+
+    db = corpus.db
+    assert not live_questions_active(db)
+    db.add(QaLog(username="ann", question="q", status="pending"))
+    db.commit()
+    assert live_questions_active(db)
+
+    polls = []
+
+    def busy_then_quiet() -> bool:
+        polls.append(1)
+        if len(polls) == 2:  # the question finishes (and is old) after the second look
+            db.query(QaLog).update({"status": "answered"})
+            db.commit()
+        return live_questions_active(db, window_s=0)
+
+    counts = summarize_pending(
+        db, FakeChat("An overview."), embedder, limit=1, yield_to=busy_then_quiet, poll_s=0
+    )
+    assert counts["waited"] >= 1 and counts["summarised"] == 1 and len(polls) >= 2

@@ -15,6 +15,7 @@ from sqlalchemy import (
     Index,
     Integer,
     PrimaryKeyConstraint,
+    SmallInteger,
     String,
     Text,
     func,
@@ -166,3 +167,27 @@ class AuditEntry(Base):
     target: Mapped[str] = mapped_column(Text, default="")
     detail: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     ip: Mapped[str | None] = mapped_column(Text)
+
+
+class QaLog(Base):
+    """One asked question. Written when it starts (status "pending") and completed when the
+    answer is final. Readable by administrators only; purged after `qa_retention_days`."""
+
+    __tablename__ = "qa_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(Text)
+    question: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text, default="pending")
+    mode: Mapped[str] = mapped_column(Text, default="")
+    resolved_doc: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    chunk_ids: Mapped[list[int]] = mapped_column(ARRAY(BigInteger), default=list)
+    answer: Mapped[str] = mapped_column(Text, default="")
+    ungrounded: Mapped[bool] = mapped_column(Boolean, default=False)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    model: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    feedback: Mapped[int | None] = mapped_column(SmallInteger)
+    comment: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (CheckConstraint("feedback IN (-1, 1)", name="ck_qa_log_feedback"),)

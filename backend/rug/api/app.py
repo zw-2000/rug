@@ -10,23 +10,28 @@ import logging
 import mimetypes
 import uuid
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from rug import audit, perms
+from rug.api.chat import register_chat
 from rug.auth import sessions
 from rug.auth.ldap import AuthError, DirectoryUnavailable, LdapAuthenticator
 from rug.config import Settings, get_settings
 from rug.db.models import Document, User
 from rug.db.session import make_session
 from rug.indexer import Indexer, IndexerBusy
+from rug.loaders import supported_extensions
 from rug.paths import UnsafePath, safe_doc_path
 from rug.uploads import UploadRejected, store
 
@@ -35,6 +40,11 @@ log = logging.getLogger(__name__)
 DEFAULT_BODY_LIMIT = 64 * 1024  # every route except upload
 MULTIPART_OVERHEAD = 1024 * 1024  # form fields and boundaries on top of the file itself
 BAD_LOGIN = "Invalid username or password."
+# The built frontend has no inline scripts or styles; answers are rendered as text only.
+CSP = (
+    "default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; "
+    "form-action 'self'; frame-ancestors 'none'"
+)
 
 
 class _BodyTooLarge(Exception):
@@ -106,6 +116,7 @@ def create_app(
     session_factory: Callable[[], Session] | None = None,
     authenticator: LdapAuthenticator | None = None,
     embedder: Any = None,
+    chat_model: Any = None,
 ) -> FastAPI:
     s = settings or get_settings()
     sessions.check_secret(s)  # refuse to start without a session secret
@@ -127,6 +138,9 @@ def create_app(
         resp: Response = await call_next(request)
         resp.headers.setdefault("Cache-Control", "no-store")
         resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("X-Frame-Options", "DENY")
+        resp.headers.setdefault("Referrer-Policy", "same-origin")
+        resp.headers.setdefault("Content-Security-Policy", CSP)
         return resp
 
     def get_db() -> Iterator[Session]:
@@ -158,11 +172,17 @@ def create_app(
 
     def me_payload(active: sessions.Active, db: Session) -> dict[str, Any]:
         p = active.principal
+        folders = sorted(perms.effective_folders(db, p))
         return {
             "username": p.username,
             "display_name": p.display_name,
             "is_admin": p.is_admin,
-            "folders": sorted(perms.effective_folders(db, p)),
+            "folders": folders,
+            "upload_folders": [
+                f for f in folders if f and (root / f).is_dir() and not (root / f).is_symlink()
+            ],
+            "upload_types": sorted(supported_extensions()),
+            "max_upload_mb": s.max_upload_mb,
             "csrf_token": active.csrf_token,
         }
 
@@ -264,6 +284,42 @@ def create_app(
         media = mimetypes.guess_type(doc.filename)[0] or "application/octet-stream"
         return FileResponse(path, media_type=media, filename=doc.filename)
 
+    @app.get("/api/documents/{doc_id}/versions")
+    def versions(
+        doc_id: str,
+        request: Request,
+        active: sessions.Active = Depends(current),
+        db: Session = Depends(get_db),
+    ) -> list[dict[str, Any]]:
+        """Every version of a document (same folder and version key), newest first."""
+        try:
+            key = uuid.UUID(doc_id)
+        except ValueError:
+            raise HTTPException(404, "Document not found.") from None
+        doc = db.get(Document, key)
+        if doc is None:
+            raise HTTPException(404, "Document not found.")
+        if doc.folder not in perms.effective_folders(db, active.principal):
+            raise HTTPException(403, "You do not have access to this document.")
+        rows = db.scalars(
+            select(Document)
+            .where(
+                Document.folder == doc.folder,
+                Document.version_key == doc.version_key,
+                Document.status == "ok",
+            )
+            .order_by(Document.mtime.desc(), Document.filename)
+        ).all()
+        return [
+            {
+                "id": str(r.id),
+                "filename": r.filename,
+                "modified": datetime.fromtimestamp(r.mtime, UTC).isoformat(),
+                "latest": i == 0,
+            }
+            for i, r in enumerate(rows)
+        ]
+
     @app.post("/api/upload", status_code=201)
     async def upload(
         request: Request,
@@ -320,6 +376,24 @@ def create_app(
             log.exception("upload %s saved but not indexed yet", rel)
         return {"path": rel, "filename": Path(rel).name, "folder": folder,
                 "indexed": indexed, "id": doc_id}  # fmt: skip
+
+    # -- chat -----------------------------------------------------------------------------
+
+    if embedder is None or chat_model is None:
+        from rug.llm import OllamaChat, OllamaEmbedder
+
+        embedder = embedder or OllamaEmbedder(s)
+        chat_model = chat_model or OllamaChat(s)
+    register_chat(
+        app,
+        s=s,
+        factory=factory,
+        get_db=get_db,
+        current=current,
+        admin=admin,
+        embedder=embedder,
+        chat_model=chat_model,
+    )
 
     # -- administration -----------------------------------------------------------------
 
@@ -409,4 +483,30 @@ def create_app(
             for e in audit.recent(db, limit, before_id, action, actor)
         ]  # fmt: skip
 
+    if s.static_dir:
+        _serve_frontend(app, Path(s.static_dir))
     return app
+
+
+class _Assets(StaticFiles):
+    """Vite fingerprints asset names, so they may be cached for good."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        resp = await super().get_response(path, scope)
+        if resp.status_code == 200:
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return resp
+
+
+def _serve_frontend(app: FastAPI, dist: Path) -> None:
+    index = dist / "index.html"
+    if not index.is_file():
+        raise FileNotFoundError(f"RUG_STATIC_DIR has no index.html: {dist}")
+    app.mount("/assets", _Assets(directory=dist / "assets"), name="assets")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def spa(path: str) -> Response:
+        # Client-side routes get the app; an unknown API path stays a JSON 404.
+        if path == "api" or path.startswith("api/"):
+            raise HTTPException(404, "Not found.")
+        return FileResponse(index, media_type="text/html")
