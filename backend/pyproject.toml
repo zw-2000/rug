@@ -55,7 +55,7 @@ known-first-party = ["rug", "eval"]
 known-third-party = ["alembic"]
 
 [tool.ruff.lint.flake8-bugbear]
-extend-immutable-calls = ["typer.Option", "typer.Argument"]
+extend-immutable-calls = ["typer.Option", "typer.Argument", "fastapi.Depends"]
 
 [tool.mypy]
 python_version = "3.11"

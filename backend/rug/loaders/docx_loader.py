@@ -83,16 +83,25 @@ class DocxLoader:
     def looks_valid(self, head: bytes) -> bool:
         return head.startswith(b"PK\x03\x04")
 
-    def load(self, path: Path) -> LoadedDocument:
+    def validate(self, path: Path) -> None:
         if not zipfile.is_zipfile(path):
             raise ValueError("not a valid .docx (zip) file")
         budget = get_settings().max_uncompressed_mb * 1024 * 1024
-        with zipfile.ZipFile(path) as z:
-            # zipfile never inflates a member past its declared size, so the header sum
-            # is a real bound on what parsing can decompress.
-            total = sum(info.file_size for info in z.infolist())
+        try:
+            with zipfile.ZipFile(path) as z:
+                # zipfile never inflates a member past its declared size, so the header sum
+                # is a real bound on what parsing can decompress.
+                names = set(z.namelist())
+                total = sum(info.file_size for info in z.infolist())
+        except zipfile.BadZipFile as e:
+            raise ValueError("not a valid .docx (zip) file") from e
+        if "word/document.xml" not in names:
+            raise ValueError("not a Word document (word/document.xml is missing)")
         if total > budget:
             raise ValueError(f"uncompressed size {total >> 20} MB exceeds budget {budget >> 20} MB")
+
+    def load(self, path: Path) -> LoadedDocument:
+        self.validate(path)
         return _Walker(docx.Document(str(path))).run()
 
 

@@ -67,6 +67,26 @@ def ingest(
 
 
 @app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", help="Address to listen on"),
+    port: int = typer.Option(8000, help="Port to listen on"),
+) -> None:
+    """Run the HTTP API (sign-in, download, upload, admin). Needs RUG_SESSION_SECRET and LDAP."""
+    import uvicorn
+
+    from rug.api.app import create_app
+    from rug.auth.ldap import DirectoryUnavailable
+    from rug.auth.sessions import ConfigError
+
+    try:
+        application = create_app()
+    except (ConfigError, DirectoryUnavailable) as e:
+        typer.echo(f"ERROR {e}", err=True)
+        raise typer.Exit(1) from e
+    uvicorn.run(application, host=host, port=port)
+
+
+@app.command()
 def stats() -> None:
     """Show catalog counts per folder."""
     with make_session() as db:

@@ -124,7 +124,9 @@ class PgSearch:
     def vector_sql(self, scope: str, *, exact: bool) -> str:
         order = "c.embedding <=> CAST(:qv AS vector)"
         if exact:
-            order = f"({order}) + 0"  # not the bare index operator, so HNSW cannot be used
+            # Not the bare index operator, so HNSW cannot be used; ties (identical chunk text
+            # gives identical vectors) break by id so the ranking never depends on row order.
+            order = f"({order}) + 0, c.id"
         return f"""
             WITH scope AS ({scope})
             SELECT c.id FROM chunks c JOIN scope s ON s.id = c.document_id

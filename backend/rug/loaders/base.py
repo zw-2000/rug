@@ -35,3 +35,8 @@ class Loader(Protocol):
     def looks_valid(self, head: bytes) -> bool:
         """Cheap content sniff (magic bytes) used to validate uploads."""
         ...
+
+    def validate(self, path: Path) -> None:
+        """Structural check of a candidate upload; raises ValueError if it is not a real file
+        of this format. Cheap: no full parse and no OCR."""
+        ...

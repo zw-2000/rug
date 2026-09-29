@@ -133,6 +133,35 @@ class Indexer:
             lock_conn.execute(select(func.pg_advisory_unlock(_LOCK_KEY)))
             lock_conn.close()
 
+    def sync_one(self, rel: str) -> str:
+        """Index a single file now (used right after an upload). Takes the same lock as a full
+        run, so raises IndexerBusy while one is in progress: the next scan picks the file up.
+        Returns the outcome ("added", "copied", "updated", "unchanged", "failed")."""
+        f = self._disk_file(rel)
+        lock_conn = self.db.get_bind().engine.connect()
+        try:
+            if not lock_conn.execute(select(func.pg_try_advisory_lock(_LOCK_KEY))).scalar():
+                raise IndexerBusy("another indexer run is in progress")
+            try:
+                known = {}
+                doc = self.db.scalars(select(Document).where(Document.path == rel)).first()
+                if doc is not None:
+                    known[rel] = doc
+                outcome = self._sync_file(f, known, {}, {})
+                self.db.commit()
+                return outcome
+            except Exception:
+                self.db.rollback()
+                raise
+        finally:
+            lock_conn.execute(select(func.pg_advisory_unlock(_LOCK_KEY)))
+            lock_conn.close()
+
+    def _disk_file(self, rel: str) -> DiskFile:
+        p = safe_doc_path(self.root, rel)
+        st = p.lstat()
+        return DiskFile(rel, st.st_size, st.st_mtime)
+
     # -- internals ------------------------------------------------------------------------
 
     def _run(self) -> IndexRun:
