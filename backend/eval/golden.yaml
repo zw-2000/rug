@@ -1,0 +1,171 @@
+# Golden questions over the synthetic corpus (eval/synthetic_gen.py). Everything is fictional.
+#
+# Per question:
+#   kind      named        the question names a document; it must resolve to `doc`
+#             find         no document named; `doc` must be among the excerpts and sources
+#             unanswerable the corpus cannot answer it; the reply must be "not found"
+#   det       true when "not found" is decided without the model (unknown ID, empty scope)
+#   facts     groups of alternatives; every group must appear (any alternative) in the text
+#   absent    text that must not appear (superseded versions, tracked deletions)
+#   forbidden text from documents outside the scope; must never reach the model or the answer
+#
+# Deterministic metrics (no model needed) gate CI; the model-dependent ones are checked with
+# `rug eval --live` on the GPU server.
+thresholds:
+  document: 0.95    # named questions resolved to the right document
+  retrieval: 0.90   # key facts are in the excerpts the model is shown
+  citation: 0.90    # live: cited excerpts contain the key facts
+  answer: 0.80      # live: the answer contains the key facts
+  not_found: 0.90   # unanswerable questions get "not found"
+  leaks: 0          # nothing outside the scope reaches the model, the answer or the sources
+
+scopes:
+  all: [sales, delivery, legal]
+  no_legal: [sales, delivery]
+  sales_only: [sales]
+  nothing: []
+
+questions:
+  # ---- named documents ---------------------------------------------------------------
+  - {id: n-scope-v2, kind: named, doc: "Boost Connect SR-1098 SOW v2 FINAL.docx",
+     q: "Boost Connect SR-1098 SOW — what does the scope of work mainly about?",
+     facts: [["Wi-Fi 7"]], absent: ["network assessment", "38,000"]}
+  - {id: n-fee-total, kind: named, doc: "Boost Connect SR-1098 SOW v2 FINAL.docx",
+     q: "What is the total fee in the Boost Connect SR-1098 SOW?",
+     facts: [["184,500"]], absent: ["38,000"]}
+  - {id: n-fee-noc, kind: named, doc: "Boost Connect SR-1098 SOW v2 FINAL.docx",
+     q: "In the Boost Connect SR-1098 SOW, how much does NOC monitoring cost?",
+     facts: [["42,500"]]}
+  - {id: n-golive, kind: named, doc: "Boost Connect SR-1098 SOW v2 FINAL.docx",
+     q: "When is go-live targeted in the Boost Connect SR-1098 SOW?",
+     facts: [["30 June 2027"]]}
+  - {id: n-accept, kind: named, doc: "Boost Connect SR-1098 SOW v2 FINAL.docx",
+     q: "How long does acceptance testing take according to the SR-1098 SOW?",
+     facts: [["10 business days"]]}
+  - {id: n-invoice, kind: named, doc: "Boost Connect SR-1098 SOW v2 FINAL.docx",
+     q: "How are invoices issued under Boost Connect SR-1098?",
+     facts: [["monthly in arrears"]]}
+  - {id: n-cr-cost, kind: named, doc: "Boost Connect SR-1098 CR-01.docx",
+     q: "What does change request CR-01 add to the SR-1098 contract value?",
+     facts: [["18,400"]]}
+  - {id: n-cr-sites, kind: named, doc: "Boost Connect SR-1098 CR-01.docx",
+     q: "Which additional sites does SR-1098 CR-01 cover?",
+     facts: [["Geelong"], ["Ballarat"]]}
+  - {id: n-cr-time, kind: named, doc: "Boost Connect SR-1098 CR-01.docx",
+     q: "How much time does SR-1098 CR-01 add to the schedule?",
+     facts: [["six weeks"]]}
+  - {id: n-sdwan-scope, kind: named, doc: "Boost Connectivity SR-1089 SOW.docx",
+     q: "Boost Connectivity SR-1089 SOW: what is the scope?",
+     facts: [["SD-WAN"]], absent: ["Wi-Fi 7"]}
+  - {id: n-sdwan-fee, kind: named, doc: "Boost Connectivity SR-1089 SOW.docx",
+     q: "How much is the fixed fee in the Boost Connectivity SOW?",
+     facts: [["96,000"]]}
+  - {id: n-sdwan-vendor, kind: named, doc: "Boost Connectivity SR-1089 SOW.docx",
+     q: "Which vendor supplies the appliances in Boost Connectivity SR-1089?",
+     facts: [["Meridian"]]}
+  - {id: n-sdwan-branches, kind: named, doc: "Boost Connectivity SR-1089 SOW.docx",
+     q: "How many branch offices does SR-1089 migrate?",
+     facts: [["twelve"]]}
+  - {id: n-harbor-uat, kind: named, doc: "Harbor Logistics SR-2210 SOW.docx",
+     q: "When is UAT sign-off in the Harbor Logistics SOW?",
+     facts: [["19 February 2027"]]}
+  - {id: n-harbor-golive, kind: named, doc: "Harbor Logistics SR-2210 SOW.docx",
+     q: "What is the go-live date for Harbor Logistics SR-2210?",
+     facts: [["8 March 2027"]]}
+  - {id: n-harbor-owner, kind: named, doc: "Harbor Logistics SR-2210 SOW.docx",
+     q: "Who is responsible for go-live in the Harbor Logistics SOW?",
+     facts: [["Joint"]]}
+  - {id: n-harbor-legacy, kind: named, doc: "Harbor Logistics SR-2210 SOW.docx",
+     q: "Which legacy system does the Harbor Logistics SOW migrate data from?",
+     facts: [["Stockline"]]}
+  - {id: n-harbor-hypercare, kind: named, doc: "Harbor Logistics SR-2210 SOW.docx",
+     q: "How long is hypercare after go-live for Harbor SR-2210?",
+     facts: [["4 weeks"]]}
+  - {id: n-pine-dc, kind: named, doc: "Pinecrest Health SR-3301 SOW.docx",
+     q: "Where is the primary datacentre in the Pinecrest Health SOW?",
+     facts: [["Melbourne DC2"]]}
+  - {id: n-pine-dr, kind: named, doc: "Pinecrest Health SR-3301 SOW.docx",
+     q: "What is the DR site for Pinecrest Health SR-3301?",
+     facts: [["Sydney"]]}
+  - {id: n-pine-rpo, kind: named, doc: "Pinecrest Health SR-3301 SOW.docx",
+     q: "What RPO does Pinecrest Health SR-3301 require?",
+     facts: [["15 minutes"]]}
+  - {id: n-atlas-pay, kind: named, doc: "Atlas Retail SR-4410 SOW.docx",
+     q: "What are the payment terms in the Atlas Retail SOW?",
+     facts: [["net 45"]], absent: ["net 30"]}
+  - {id: n-atlas-stores, kind: named, doc: "Atlas Retail SR-4410 SOW.docx",
+     q: "How many stores does the Atlas Retail SR-4410 SOW upgrade?",
+     facts: [["40 stores"]]}
+  - {id: n-atlas-rate, kind: named, doc: "Atlas Retail SR-4410 SOW.docx",
+     q: "How fast is the store rollout in Atlas Retail SR-4410?",
+     facts: [["five stores per week"]]}
+  - {id: n-north-what, kind: named, doc: "Northwind Foods SR-5120 SOW.docx",
+     q: "What does the Northwind Foods cold-chain monitoring SOW deliver?",
+     facts: [["sensor"]]}
+  - {id: n-north-battery, kind: named, doc: "Northwind Foods SR-5120 SOW.docx",
+     q: "How long do the sensors last in the Northwind Foods SOW?",
+     facts: [["five years"]]}
+  - {id: n-north-sites, kind: named, doc: "Northwind Foods SR-5120 SOW.docx",
+     q: "Where are the Northwind Foods distribution centres?",
+     facts: [["Dandenong"], ["Truganina"]]}
+  - {id: n-msa-cap, kind: named, doc: "Boost Connect MSA 2025.docx",
+     q: "What is the liability cap in the Boost Connect MSA 2025?",
+     facts: [["2,000,000"]]}
+  - {id: n-msa-law, kind: named, doc: "Boost Connect MSA 2025.docx",
+     q: "Which law governs the Boost Connect MSA?",
+     facts: [["Victoria"]]}
+  - {id: n-msa-term, kind: named, doc: "Boost Connect MSA 2025.docx",
+     q: "How much notice is needed to terminate the Boost Connect MSA for convenience?",
+     facts: [["60 days"]]}
+  - {id: n-nda-term, kind: named, doc: "Contoso Mutual NDA.docx",
+     q: "How long do confidentiality obligations last under the Contoso Mutual NDA?",
+     facts: [["three (3) years"]]}
+  - {id: n-typo, kind: named, doc: "Harbor Logistics SR-2210 SOW.docx",
+     q: "What is the go-live date for Harbour Logistics SR-2210?",
+     facts: [["8 March 2027"]]}
+  - {id: n-lower-id, kind: named, doc: "Harbor Logistics SR-2210 SOW.docx",
+     q: "when is go-live for sr2210",
+     facts: [["8 March 2027"]]}
+
+  # ---- the document is not named: find it ----------------------------------------------
+  - {id: f-sdwan, kind: find, doc: "Boost Connectivity SR-1089 SOW.docx",
+     q: "Which SOW covers the SD-WAN migration?", facts: [["SD-WAN"]]}
+  - {id: f-cold, kind: find, doc: "Northwind Foods SR-5120 SOW.docx",
+     q: "Which document is about cold-chain sensors?", facts: [["sensor"]]}
+  - {id: f-clinical, kind: find, doc: "Pinecrest Health SR-3301 SOW.docx",
+     q: "Which SOW involves migrating clinical systems?", facts: [["clinical"]]}
+  - {id: f-pos, kind: find, doc: "Atlas Retail SR-4410 SOW.docx",
+     q: "Which statement of work covers point-of-sale network upgrades?", facts: [["point-of-sale"]]}
+  - {id: f-geelong, kind: find, doc: "Boost Connect SR-1098 CR-01.docx",
+     q: "Which change request extends the rollout to Geelong?", facts: [["Geelong"]]}
+  - {id: f-liability, kind: find, doc: "Boost Connect MSA 2025.docx",
+     q: "Which agreement caps liability at AUD 2,000,000?", facts: [["liability"]]}
+  - {id: f-nsw, kind: find, doc: "Contoso Mutual NDA.docx",
+     q: "Which agreement is governed by New South Wales law?", facts: [["New South Wales"]]}
+
+  # ---- cannot be answered: the reply must be "not found" -------------------------------
+  - {id: u-unknown-id, kind: unanswerable, det: true, q: "Acme SR-9999 SOW scope"}
+  - {id: u-unknown-cr, kind: unanswerable, det: true, q: "What is in CR-77 for Boost Connect?"}
+  - {id: u-penalty, kind: unanswerable,
+     q: "What penalty rate applies to late delivery in the Harbor Logistics SOW?"}
+  - {id: u-ceo, kind: unanswerable, q: "Who is the CEO of Harbor Logistics?"}
+  - {id: u-weather, kind: unanswerable, q: "What is the weather in Melbourne next week?"}
+
+  # ---- permissions: legal/ is not visible; nothing from it may leak --------------------
+  - {id: p-msa-name, kind: unanswerable, scope: no_legal,
+     q: "What is the liability cap in the Boost Connect MSA 2025?",
+     forbidden: ["aggregate liability", "Master Services Agreement", "laws of Victoria"]}
+  - {id: p-nda-name, kind: unanswerable, scope: no_legal,
+     q: "How long do confidentiality obligations last under the Contoso Mutual NDA?",
+     forbidden: ["survive for", "Non-Disclosure"]}
+  - {id: p-find, kind: unanswerable, scope: no_legal,
+     q: "Which agreement caps liability at AUD 2,000,000?",
+     forbidden: ["aggregate liability", "Master Services Agreement"]}
+  - {id: p-law, kind: unanswerable, scope: no_legal,
+     q: "Which law governs the Boost Connect MSA?",
+     forbidden: ["laws of Victoria", "laws of New South Wales"]}
+  - {id: p-sales-only, kind: unanswerable, scope: sales_only,
+     q: "Which SOW covers cold-chain sensors?",
+     forbidden: ["Dandenong", "battery life", "Northwind"]}
+  - {id: p-nothing, kind: unanswerable, det: true, scope: nothing,
+     q: "Boost Connect SR-1098 SOW — what does the scope of work mainly about?"}

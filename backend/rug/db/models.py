@@ -74,6 +74,19 @@ class Chunk(Base):
     document: Mapped[Document] = relationship(back_populates="chunks")
 
 
+class DocumentSummary(Base):
+    """Machine-written overview of a document, keyed by content hash so copies, renames
+    and moves share it. Its embedding is the document-level vector for find-the-doc."""
+
+    __tablename__ = "document_summaries"
+
+    sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    summary: Mapped[str] = mapped_column(Text)
+    embedding: Mapped[list[float]] = mapped_column(Vector(EMBED_DIM))
+    model: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class IndexRun(Base):
     __tablename__ = "index_runs"
 

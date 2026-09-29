@@ -16,6 +16,7 @@ dependencies = [
     "rapidfuzz>=3",
     "httpx>=0.27",
     "typer>=0.12",
+    "pyyaml>=6",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +34,7 @@ include = ["rug*", "eval*"]
 
 [tool.setuptools.package-data]
 "rug.migrations" = ["script.py.mako"]
+eval = ["golden.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
