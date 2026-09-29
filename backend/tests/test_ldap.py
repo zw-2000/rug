@@ -1,7 +1,7 @@
 import pytest
 from ldap3.core.exceptions import LDAPSocketOpenError
-from ldapmock import MockDirectory
 
+from eval.ldapmock import MockDirectory
 from rug.auth.ldap import AuthError, DirectoryUnavailable, LdapAuthenticator
 from rug.config import Settings
 

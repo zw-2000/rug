@@ -28,7 +28,7 @@ def engine():
         c.execute(
             text(
                 "DROP TABLE IF EXISTS chunks, documents, document_summaries, index_runs, "
-                "users, sessions, group_folders, user_overrides, audit_log, alembic_version"
+                "users, sessions, group_folders, user_overrides, audit_log, qa_log, alembic_version"
             )
         )
     alembic_upgrade(TEST_DB_URL)
@@ -42,7 +42,7 @@ def db(engine) -> Iterator[Session]:
         c.execute(
             text(
                 "TRUNCATE chunks, documents, document_summaries, index_runs, users, sessions, "
-                "group_folders, user_overrides, audit_log RESTART IDENTITY CASCADE"
+                "group_folders, user_overrides, audit_log, qa_log RESTART IDENTITY CASCADE"
             )
         )
     session = sessionmaker(engine, expire_on_commit=False)()

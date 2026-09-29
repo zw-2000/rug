@@ -14,7 +14,7 @@ Built in milestones, each behind a validation gate:
 | M1 | Postgres schema, `.docx` loader (tables, tracked changes, OCR), versions, indexer | **done** |
 | M2 | Resolver, hybrid retrieval, summaries, RAG, `rug ask` / `rug eval` | **done** (see "M2 status") |
 | M3 | AD/LDAP login, per-folder permissions, admin overrides, audit log | **done** (see "M3 status") |
-| M4 | Web API + React chat, upload, download | |
+| M4 | Web API + React chat, upload, download | **done** (see "M4 status") |
 | M5 | Admin UI, Docker Compose + Caddy, backups | |
 
 ## How indexing works (M1)
@@ -95,7 +95,7 @@ unanswerable, permission cases).
 
 ## Sign-in, permissions, uploads (M3)
 
-`rug serve` runs a small HTTP API (the chat endpoint and the React UI arrive in M4).
+`rug serve` runs the HTTP API (chat and the React UI are described under M4).
 
 - **Sign-in.** The password is verified by binding to Active Directory *as the user* (`CORP\user`
   or `user@suffix`), so no service-account secret is stored. Empty passwords are refused before
@@ -160,6 +160,59 @@ Endpoints: `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/me`,
 - The leak matrix calls `Rag.ask` with folders from `effective_folders` directly; the
   session → folders → ask wiring is tested once M4 adds the chat endpoint.
 - Requests run on synchronous database sessions; fine for a small team, revisit if the load grows.
+
+## Chat, web UI, upload, download (M4)
+
+`frontend/` is a React + Vite + TypeScript app (plain CSS). Build it and let the API serve it:
+
+```bash
+cd frontend && npm ci && npm run build          # -> frontend/dist
+cd ../backend && RUG_STATIC_DIR=../frontend/dist rug serve --host 0.0.0.0 --port 8000
+```
+
+Pages: **Sign in**, **Ask** (streamed answer, "which one?" picker, pinned-document chip, source
+cards with Download and the other versions, 👍/👎), **Upload** (only folders you may use that exist
+on the share; accepted types and the size limit come from the server). The admin screens arrive in M5.
+
+- **`POST /api/chat`** streams Server-Sent Events over `fetch`: `status` (`queued` while waiting for
+  the model's turn, then `working`), provisional `token`s, and one final `answer`. **Only the final
+  `answer` event is authoritative**: it carries the validated text (invalid citations removed, "not
+  found" normalised), the sources, and the picker candidates, and it replaces the draft the UI showed
+  while streaming. Searchable folders are always the caller's effective folders, never anything the
+  client sends. Pinning a document you may not access gets the same "not found" reply as an unknown id.
+- **One question at a time** reaches the local model (`RUG_CHAT_CONCURRENCY`, default 1); up to
+  `RUG_CHAT_MAX_QUEUE` wait ("Waiting for the model…"), beyond that the API answers 503. `rug summarize`
+  yields to live questions between documents; it cannot interrupt a summary already being written.
+- **Answers are rendered as text only** (no HTML or Markdown rendering; `[n]` markers become
+  superscripts), because model output is derived from untrusted document content. The API sends a
+  `Content-Security-Policy` of `default-src 'self'` and other hardening headers.
+- **Question log.** Every question is stored (user, question, resolved document, chunk ids, answer,
+  latency, thumbs and comment) and readable only by admins (`GET /api/admin/qa`); rows are deleted
+  after `RUG_QA_RETENTION_DAYS` (90). Tell your users that questions are logged.
+- `GET /api/documents/{id}/versions` lists all versions of a document you may access.
+
+Tests: `pytest` covers the endpoints (including the permission-leak check through HTTP: a sales-only
+user asking every golden question sees no other folder's documents, filenames or text).
+`cd frontend && npm test` runs unit tests (SSE parser, citation rendering) and `npm run e2e` runs
+Playwright in Chromium against `backend/eval/e2e_server.py`: sign in, ask the SR-1098 question, see
+the cited answer, download the file and compare its checksum with the one on disk; plus wrong
+password, cross-folder access (403), the picker, feedback, sign-out and upload.
+
+### M4 status: what is and is not verified
+
+- Verified here: the API and UI plumbing above, in a real browser.
+- **The end-to-end tests use fake models** (hash embeddings and a model that quotes the first
+  excerpt), so they prove the plumbing, not answer quality. The real model's answers, its token
+  streaming through Ollama, latency on your GPU and the `qwen2.5:7b-instruct-q4_K_M` tag remain
+  unverified; run `rug eval --live` and try the UI on the GPU server.
+- Not done: "not right? pick another" for a confidently resolved document (the picker appears only when
+  the match is ambiguous; use "Keep asking about this document" / the chip to stay on a document), the
+  background indexer schedule (`rug ingest` is still run by hand or cron; M5), and the admin screens.
+- If a browser tab is closed mid-answer the server is meant to stop the model call at the next token
+  and drop a question still queued. This is implemented but **not tested** (the test client cannot
+  simulate a disconnect); check it against a real Ollama.
+- npm 10.9 crashed resolving peer dependencies for the newest Vite/Vitest majors, so
+  `frontend/.npmrc` sets `legacy-peer-deps=true`. Versions are pinned by `package-lock.json`.
 
 ## Development setup
 

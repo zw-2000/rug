@@ -4,18 +4,22 @@ Runs as its own pass (`rug summarize`), never inside the indexer: a summary take
 GPU time per document, and doing it under the indexer's lock would stall scans for days on a
 large corpus and turn an Ollama outage into failed documents. Summaries are keyed by content
 hash, so copies, renames and moves reuse them, and an edit orphans the old one (deleted at
-the start of the next pass). Live questions must take priority over this job; that queueing
-arrives with the API milestone, so run it when the server is otherwise idle.
+the start of the next pass). Live questions take priority: between documents the pass waits
+while any question was asked recently (`live_questions_active`). It cannot interrupt a summary
+already being written, so a question that arrives mid-summary waits for that one to finish.
 """
 
 import logging
+import time
 from collections import Counter
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import CursorResult, text
 from sqlalchemy.orm import Session
 
 from rug.config import Settings, get_settings
-from rug.db.models import DocumentSummary
+from rug.db.models import DocumentSummary, QaLog
 from rug.llm import ChatError, ChatModel, Embedder, EmbeddingError
 
 log = logging.getLogger(__name__)
@@ -90,12 +94,31 @@ _PENDING_SQL = text(
 )
 
 
+def live_questions_active(db: Session, window_s: int = 60, stale_s: int | None = None) -> bool:
+    """True while someone is waiting for, or has just received, an answer. Use a session of its
+    own for this probe, not the one that is writing summaries. A row still "pending" long after
+    the chat timeout belongs to a server that died mid-answer and is ignored."""
+    now = datetime.now(UTC)
+    stale = stale_s if stale_s is not None else get_settings().chat_timeout_s + 60
+    return (
+        db.query(QaLog.id)
+        .filter(
+            ((QaLog.status == "pending") & (QaLog.created_at >= now - timedelta(seconds=stale)))
+            | (QaLog.created_at >= now - timedelta(seconds=window_s))
+        )
+        .first()
+        is not None
+    )
+
+
 def summarize_pending(
     db: Session,
     chat: ChatModel,
     embedder: Embedder,
     settings: Settings | None = None,
     limit: int | None = None,
+    yield_to: Callable[[], bool] | None = None,
+    poll_s: float = 5.0,
 ) -> Counter[str]:
     s = settings or get_settings()
     counts: Counter[str] = Counter()
@@ -109,6 +132,9 @@ def summarize_pending(
     db.commit()
 
     for row in db.execute(_PENDING_SQL, {"n": limit or 10**9}).all():
+        while yield_to is not None and yield_to():
+            counts["waited"] += 1
+            time.sleep(poll_s)
         chunks = db.execute(
             text("SELECT heading_path, text FROM chunks WHERE document_id = :d ORDER BY ord"),
             {"d": row.id},

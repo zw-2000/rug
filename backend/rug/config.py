@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     login_window_s: int = 600
     trusted_proxies: list[str] = []  # reverse-proxy addresses whose X-Forwarded-For is believed
 
+    # --- Chat API ---------------------------------------------------------------------------
+    chat_concurrency: int = 1  # questions answered at once (the local model is the bottleneck)
+    chat_max_queue: int = 20  # questions allowed to wait for a turn; more get HTTP 503
+    qa_retention_days: int = 90  # question/answer log is purged after this many days
+    static_dir: str = ""  # built frontend (frontend/dist); empty serves the API only
+
     scan_interval_s: int = 600
     # Refuse a scan that would delete more than this share of the catalog (e.g. the NAS
     # share is not mounted and the mount point is empty). Override with --allow-mass-delete.

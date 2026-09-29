@@ -10,3 +10,4 @@ docs/
 data/
 build/
 dist/
+.e2e-docs/
