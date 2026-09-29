@@ -30,6 +30,37 @@ class Settings(BaseSettings):
     ocr_max_pixels: int = 25_000_000  # larger images are downscaled before OCR
     ocr_timeout_s: int = 60
 
+    # Chat model. The tag is a default and has not been verified against the Ollama library.
+    chat_model: str = "qwen2.5:7b-instruct-q4_K_M"
+    # Set explicitly on every request: the server-side default window is small, and an
+    # oversized prompt would be cut off without an error.
+    chat_num_ctx: int = 8192
+    chat_timeout_s: int = 300
+
+    # Retrieval
+    retrieval_top_k: int = 8
+    retrieval_candidates: int = 50  # per branch (keyword / vector) before fusion
+    rrf_k: int = 60
+    # Ceiling on the WHOLE prompt in characters (system prompt, question, overview, excerpt
+    # headers and bodies; ~4 chars/token), leaving room for the answer inside chat_num_ctx.
+    context_char_budget: int = 16000
+    max_question_chars: int = 2000  # longer questions are rejected, not silently truncated
+    summary_prompt_chars: int = 1500
+    # Scopes with at most this many chunks are scored exactly; larger ones use the HNSW
+    # index (approximate when filtered) and fall back to exact if it under-delivers.
+    exact_scan_max_chunks: int = 100_000
+    hnsw_ef_search: int = 1000
+
+    # Document-name resolution (thresholds are tuned on the synthetic corpus; re-check
+    # them against real filenames).
+    resolver_accept_named: float = 0.75  # query names a document without an ID
+    resolver_accept_id: float = 0.5  # query contains a document ID
+    resolver_margin: float = 0.12  # runners-up this close to the winner make it ambiguous
+    resolver_max_candidates: int = 5
+    id_pattern: str = r"(?<![A-Za-z0-9])([A-Za-z]{2,6})([-_ ]?)(\d{2,})(?![A-Za-z0-9])"
+
+    summary_window_chars: int = 9000
+
     scan_interval_s: int = 600
     # Refuse a scan that would delete more than this share of the catalog (e.g. the NAS
     # share is not mounted and the mount point is empty). Override with --allow-mass-delete.

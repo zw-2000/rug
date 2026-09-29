@@ -48,3 +48,61 @@ def test_check_reports_unreachable_ollama():
 
     with pytest.raises(EmbeddingError, match="cannot reach Ollama"):
         OllamaEmbedder(Settings(), _client(refuse)).check()
+
+
+def _chat(lines: list[str], status: int = 200, seen: list | None = None):
+    def handler(req: httpx.Request) -> httpx.Response:
+        if seen is not None:
+            seen.append((req.url.path, json.loads(req.content)))
+        return httpx.Response(status, content=("\n".join(lines) + "\n").encode())
+
+    from rug.llm import OllamaChat
+
+    return OllamaChat(Settings(chat_model="m", chat_num_ctx=4096), _client(handler))
+
+
+def test_chat_streams_tokens_and_pins_the_context_window():
+    seen: list = []
+    lines = [
+        '{"message":{"role":"assistant","content":"Hel"},"done":false}',
+        '{"message":{"role":"assistant","content":"lo"},"done":false}',
+        '{"message":{"role":"assistant","content":""},"done":true}',
+    ]
+    tokens: list[str] = []
+    out = _chat(lines, seen=seen).chat([{"role": "user", "content": "hi"}], tokens.append)
+    assert out == "Hello" and tokens == ["Hel", "lo"]
+    path, body = seen[0]
+    assert path == "/api/chat" and body["stream"] is True and body["model"] == "m"
+    assert body["options"] == {"temperature": 0, "num_ctx": 4096}
+
+
+def test_chat_refuses_a_truncated_stream():
+    from rug.llm import ChatError
+
+    lines = ['{"message":{"role":"assistant","content":"Half an ans"},"done":false}']
+    with pytest.raises(ChatError, match="ended before"):
+        _chat(lines).chat([{"role": "user", "content": "hi"}])
+
+
+def test_chat_surfaces_server_errors():
+    from rug.llm import ChatError
+
+    with pytest.raises(ChatError, match="model requires more system memory"):
+        _chat(['{"error":"model requires more system memory"}']).chat([])
+    with pytest.raises(ChatError, match="500"):
+        _chat(["boom"], status=500).chat([])
+
+
+def test_chat_check_reports_missing_model_and_unreachable_server():
+    from rug.llm import ChatError, OllamaChat
+
+    missing = OllamaChat(Settings(chat_model="nope"), _client(lambda r: httpx.Response(404)))
+    with pytest.raises(ChatError, match="ollama pull nope"):
+        missing.check()
+
+    def refuse(req):
+        raise httpx.ConnectError("refused", request=req)
+
+    with pytest.raises(ChatError, match="cannot reach"):
+        OllamaChat(Settings(), _client(refuse)).check()
+    OllamaChat(Settings(), _client(lambda r: httpx.Response(200, json={}))).check()
