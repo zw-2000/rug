@@ -131,9 +131,12 @@ def summarize(
         chat.check()
         embedder.check()
         with make_session() as db:
-            counts = summarize_pending(
-                db, chat, embedder, limit=limit, yield_to=lambda: live_questions_active(db)
-            )
+
+            def questions_waiting() -> bool:
+                with make_session() as probe:  # its own session: never touches the writer's
+                    return live_questions_active(probe)
+
+            counts = summarize_pending(db, chat, embedder, limit=limit, yield_to=questions_waiting)
     except (ChatError, EmbeddingError) as e:
         typer.echo(f"ERROR {e}", err=True)
         raise typer.Exit(1) from e

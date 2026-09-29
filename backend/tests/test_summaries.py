@@ -136,15 +136,23 @@ def test_a_content_derived_title_is_still_given_to_the_summariser(db, embedder, 
     assert "Northwind Cold-Chain SOW" in chat.calls[0][1]["content"]  # same bytes, same title
 
 
-def test_summaries_wait_while_a_question_is_being_asked(corpus, embedder):
+def test_summaries_wait_while_a_question_is_being_asked(corpus, embedder, engine):
+    from sqlalchemy.orm import sessionmaker
+
     from rug.db.models import QaLog
     from rug.summaries import live_questions_active, summarize_pending
 
     db = corpus.db
-    assert not live_questions_active(db)
+    probe_factory = sessionmaker(engine)
+
+    def probe(**kw) -> bool:
+        with probe_factory() as p:
+            return live_questions_active(p, **kw)
+
+    assert not probe()
     db.add(QaLog(username="ann", question="q", status="pending"))
     db.commit()
-    assert live_questions_active(db)
+    assert probe()
 
     polls = []
 
@@ -153,9 +161,49 @@ def test_summaries_wait_while_a_question_is_being_asked(corpus, embedder):
         if len(polls) == 2:  # the question finishes (and is old) after the second look
             db.query(QaLog).update({"status": "answered"})
             db.commit()
-        return live_questions_active(db, window_s=0)
+        return probe(window_s=0)
 
     counts = summarize_pending(
         db, FakeChat("An overview."), embedder, limit=1, yield_to=busy_then_quiet, poll_s=0
     )
     assert counts["waited"] >= 1 and counts["summarised"] == 1 and len(polls) >= 2
+
+
+def test_probing_between_documents_never_loses_finished_summaries(corpus, embedder, engine):
+    from sqlalchemy.orm import sessionmaker
+
+    from rug.summaries import live_questions_active
+
+    factory = sessionmaker(engine)
+
+    def quiet() -> bool:
+        with factory() as p:
+            return live_questions_active(p)
+
+    counts = summarize_pending(
+        corpus.db, FakeChat("An overview."), embedder, limit=3, yield_to=quiet, poll_s=0
+    )
+    assert counts["summarised"] == 3 and not counts["waited"]
+    with factory() as fresh:  # a different session sees all three
+        assert fresh.scalar(select(func.count()).select_from(DocumentSummary)) == 3
+
+
+def test_a_stale_pending_row_from_a_crashed_server_does_not_block_forever(db, engine):
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy.orm import sessionmaker
+
+    from rug.db.models import QaLog
+    from rug.summaries import live_questions_active
+
+    db.add(
+        QaLog(
+            username="ann",
+            question="q",
+            status="pending",
+            created_at=datetime.now(UTC) - timedelta(hours=1),
+        )
+    )
+    db.commit()
+    with sessionmaker(engine)() as p:
+        assert live_questions_active(p) is False

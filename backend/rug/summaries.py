@@ -94,12 +94,19 @@ _PENDING_SQL = text(
 )
 
 
-def live_questions_active(db: Session, window_s: int = 60) -> bool:
-    """True while someone is waiting for, or has just received, an answer."""
-    since = datetime.now(UTC) - timedelta(seconds=window_s)
-    db.rollback()  # end the read transaction so each check sees fresh rows
+def live_questions_active(db: Session, window_s: int = 60, stale_s: int | None = None) -> bool:
+    """True while someone is waiting for, or has just received, an answer. Use a session of its
+    own for this probe, not the one that is writing summaries. A row still "pending" long after
+    the chat timeout belongs to a server that died mid-answer and is ignored."""
+    now = datetime.now(UTC)
+    stale = stale_s if stale_s is not None else get_settings().chat_timeout_s + 60
     return (
-        db.query(QaLog.id).filter((QaLog.status == "pending") | (QaLog.created_at >= since)).first()
+        db.query(QaLog.id)
+        .filter(
+            ((QaLog.status == "pending") & (QaLog.created_at >= now - timedelta(seconds=stale)))
+            | (QaLog.created_at >= now - timedelta(seconds=window_s))
+        )
+        .first()
         is not None
     )
 
