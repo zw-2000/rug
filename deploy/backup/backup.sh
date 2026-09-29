@@ -1,5 +1,6 @@
 #!/bin/sh
-# Nightly PostgreSQL backup.  Usage:  backup.sh once | loop | verify FILE
+# Nightly PostgreSQL backup.  Usage:  backup.sh once | loop | next | verify FILE
+# (`next` prints the seconds until the next scheduled run; BACKUP_AT is in the TZ time zone)
 #
 #  - custom-format dump (pg_dump -Fc), written to a temp name and moved into place only after
 #    `pg_restore --list` can read it, so a half-written dump is never mistaken for a backup
@@ -49,6 +50,7 @@ seconds_until() {  # local HH:MM -> seconds from now (today, or tomorrow if alre
 case "${1:-once}" in
     once) once ;;
     verify) verify "$2" && log "$2 is readable" ;;
+    next) seconds_until "${BACKUP_AT:-02:30}" ;;
     loop)
         at="${BACKUP_AT:-02:30}"
         log "scheduled daily at $at (keeping $KEEP)"
@@ -58,5 +60,5 @@ case "${1:-once}" in
             sleep 61  # never run twice in the same minute
         done
         ;;
-    *) echo "usage: $0 once|loop|verify FILE" >&2; exit 2 ;;
+    *) echo "usage: $0 once|loop|next|verify FILE" >&2; exit 2 ;;
 esac

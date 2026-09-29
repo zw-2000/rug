@@ -42,7 +42,8 @@ RUN --mount=type=secret,id=ca,required=false \
     && apt-get $OPTS install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*; \
     fi
-RUN useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin rug
+RUN groupadd --system --gid 10001 rug \
+    && useradd --system --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin rug
 WORKDIR /app
 COPY backend/pyproject.toml ./
 COPY backend/rug ./rug

@@ -35,7 +35,7 @@ mkdir -p backups-smoke
 
 echo "== build =="
 # shellcheck disable=SC2086
-docker build ${RUG_BUILD_ARGS:-} --target smoke -f Dockerfile -t rug-app:local .. > /tmp/rug-smoke-build.log 2>&1 \
+docker build ${RUG_BUILD_ARGS:-} --target smoke -f Dockerfile -t rug-app:smoke .. > /tmp/rug-smoke-build.log 2>&1 \
     || { tail -30 /tmp/rug-smoke-build.log; exit 1; }
 
 echo "== start =="
@@ -48,6 +48,14 @@ for _ in $(seq 1 30); do
 done
 [ -s smoke-ca.crt ] || { $COMPOSE logs caddy --tail 30; exit 1; }
 
+echo "== image separation =="
+docker run --rm --entrypoint sh rug-app:smoke -c 'test -d /app/harness' && pass "smoke image carries the test harness" || fail "smoke image lacks the harness"
+if docker image inspect rug-app:local >/dev/null 2>&1; then
+    docker run --rm --entrypoint sh rug-app:local -c 'test ! -e /app/harness' \
+        && pass "production image tag (rug-app:local) has no test harness" \
+        || fail "rug-app:local contains the test harness"
+fi
+
 echo "== HTTPS checks =="
 sha=$($COMPOSE exec -T app sha256sum "$SOW" | cut -d' ' -f1)
 python3 smoke_check.py --host localhost --ca smoke-ca.crt --expect-sha "$sha" || status=1
@@ -58,6 +66,10 @@ ports=$(docker ps --filter "label=com.docker.compose.project=$PROJECT" --format 
 [ -z "$ports" ] && pass "only Caddy publishes ports" || fail "other services publish ports: $ports"
 
 echo "== backup and restore =="
+wait=$($COMPOSE exec -T backup sh /backup.sh next | tr -d '\r')
+[ "${wait:-0}" -ge 1 ] && [ "${wait:-0}" -le 86400 ] && pass "backup schedule computes the next run ($wait s)" || fail "backup schedule gave '$wait'"
+tz=$($COMPOSE exec -T backup date +%Z | tr -d '\r')
+[ "$tz" = "UTC" ] && pass "backup container clock follows TZ (UTC)" || fail "unexpected backup timezone $tz"
 $COMPOSE exec -T backup sh /backup.sh once
 newest=$(ls -1 backups-smoke/rug-*.dump | sort | tail -1)
 name=$(basename "$newest")

@@ -74,13 +74,16 @@ def serve(
     """Run the HTTP API (sign-in, download, upload, admin). Needs RUG_SESSION_SECRET and LDAP."""
     import uvicorn
 
+    from rug import embedmeta
     from rug.api.app import create_app
     from rug.auth.ldap import DirectoryUnavailable
     from rug.auth.sessions import ConfigError
 
     try:
+        with make_session() as db:
+            embedmeta.check(db, get_settings())
         application = create_app()
-    except (ConfigError, DirectoryUnavailable) as e:
+    except (ConfigError, DirectoryUnavailable, embedmeta.EmbeddingModelMismatch) as e:
         typer.echo(f"ERROR {e}", err=True)
         raise typer.Exit(1) from e
     # proxy_headers off: the app alone decides whose X-Forwarded-For to believe.
@@ -93,11 +96,18 @@ def worker() -> None:
     import signal
     import threading
 
+    from rug import embedmeta
     from rug.llm import OllamaChat, OllamaEmbedder
     from rug.worker import serve_forever
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     settings = get_settings()
+    try:
+        with make_session() as db:
+            embedmeta.check(db, settings)
+    except embedmeta.EmbeddingModelMismatch as e:
+        typer.echo(f"ERROR {e}", err=True)
+        raise typer.Exit(1) from e
     embedder, chat = OllamaEmbedder(settings), OllamaChat(settings)
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -113,6 +123,28 @@ def worker() -> None:
         stop, make_session, embedder, chat, settings,
         check_embedder=check_embedder, check_chat=check_chat,
     )  # fmt: skip
+
+
+@app.command()
+def reembed() -> None:
+    """Rebuild every vector with the configured embedding model (after changing RUG_EMBED_MODEL).
+
+    Stop the app and worker first. Slow on a large corpus; safe to re-run if interrupted."""
+    from rug.indexer import Indexer, IndexerBusy
+    from rug.llm import EmbeddingError, OllamaEmbedder
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    embedder = OllamaEmbedder()
+    try:
+        embedder.check()
+        with make_session() as db:
+            done = Indexer(db, embedder, get_settings().docs_dir).reembed_all(
+                lambda n, total: typer.echo(f"\r{n}/{total} documents", nl=n == total)
+            )
+    except (EmbeddingError, IndexerBusy) as e:
+        typer.echo(f"ERROR {e}", err=True)
+        raise typer.Exit(1) from e
+    typer.echo(json.dumps(done))
 
 
 @app.command("export-feedback")
@@ -266,7 +298,7 @@ def eval_cmd(
     with make_session(database_url) as db, tempfile.TemporaryDirectory() as tmp:
         db.execute(
             text(
-                "TRUNCATE chunks, documents, document_summaries, index_runs "
+                "TRUNCATE chunks, documents, document_summaries, index_runs, index_meta "
                 "RESTART IDENTITY CASCADE"
             )
         )

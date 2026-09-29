@@ -14,6 +14,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from rug import embedmeta
 from rug.config import Settings
 from rug.indexer import Indexer, IndexerBusy, MassDeletionRefused
 from rug.llm import ChatError, ChatModel, Embedder, EmbeddingError
@@ -52,6 +53,9 @@ def run_cycle(
     except FileNotFoundError as e:
         out["scan"] = "share-missing"
         log.error("document folder unavailable: %s", e)
+    except embedmeta.EmbeddingModelMismatch as e:
+        out["scan"] = "model-mismatch"
+        log.error("scan skipped: %s", e)
     except EmbeddingError as e:
         out["scan"] = "embeddings-unavailable"
         log.warning("embeddings unavailable, scan skipped: %s", e)
@@ -72,6 +76,9 @@ def run_cycle(
                 db, chat, embedder, settings, yield_to=questions_waiting, poll_s=poll_s
             )
             out["summaries"] = dict(counts)
+    except embedmeta.EmbeddingModelMismatch as e:
+        out["summaries"] = "model-mismatch"
+        log.error("summaries skipped: %s", e)
     except (ChatError, EmbeddingError) as e:
         out["summaries"] = "model-unavailable"
         log.warning("summaries skipped, model unavailable: %s", e)

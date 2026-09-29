@@ -29,7 +29,7 @@ def engine():
             text(
                 "DROP TABLE IF EXISTS chunks, documents, document_summaries, index_runs, "
                 "users, sessions, group_folders, user_overrides, audit_log, qa_log, doc_types, "
-                "alembic_version"
+                "index_meta, alembic_version"
             )
         )
     alembic_upgrade(TEST_DB_URL)
@@ -43,7 +43,7 @@ def db(engine) -> Iterator[Session]:
         c.execute(
             text(
                 "TRUNCATE chunks, documents, document_summaries, index_runs, users, sessions, "
-                "group_folders, user_overrides, audit_log, qa_log, doc_types "
+                "group_folders, user_overrides, audit_log, qa_log, doc_types, index_meta "
                 "RESTART IDENTITY CASCADE"
             )
         )

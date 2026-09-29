@@ -92,7 +92,8 @@ services:
       PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       PGDATABASE: ${POSTGRES_DB:-rug}
       BACKUP_KEEP: ${BACKUP_KEEP:-14}
-      BACKUP_AT: ${BACKUP_AT:-02:30}
+      BACKUP_AT: ${BACKUP_AT:-02:30}   # in the time zone below
+      TZ: ${TZ:-UTC}
     volumes:
       - ./backup/backup.sh:/backup.sh:ro
       - ./backup/restore.sh:/restore.sh:ro

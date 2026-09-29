@@ -265,7 +265,21 @@ write to it, otherwise uploads fail with "permission denied" and nothing else no
 create new ones on the share itself (the app never creates them).
 
 **Models.** `RUG_CHAT_MODEL` / `RUG_EMBED_MODEL` are pulled by `ollama-pull`. Check the chat model tag exists in
-your Ollama before relying on it. Changing the embedding model needs a re-index.
+your Ollama before relying on it.
+
+**Changing the embedding model** (or its task prefixes). Vectors from different models are not comparable, so
+the index records which model built it and `rug serve`, `rug worker`, `rug ingest` and `rug summarize` refuse to
+run when the setting differs, naming the fix. To switch: stop `app`, `worker` and `backup`, set the new
+`RUG_EMBED_MODEL` in `.env`, `docker compose --profile setup run --rm ollama-pull`, then
+`docker compose run --rm --no-deps app rug reembed` (slow on a large corpus; if interrupted the index stays marked
+unusable, so just run it again), then start everything. A model with a different vector size needs a schema
+migration as well. An index created before this check existed is assumed to match the current setting (a warning
+is logged); if that is wrong, run `rug reembed`.
+
+**Other host settings.** The stack uses the Docker network `172.28.0.0/24` (Caddy is pinned to `172.28.0.10`):
+change both in `docker-compose.yml` if your LAN already uses that range. The containers run as uid/gid 10001.
+`POSTGRES_PASSWORD` goes into a database URL: use letters and digits only (`openssl rand -hex 24`). Set `TZ` so
+`BACKUP_AT` means your local time (default UTC).
 
 ### Backups
 
@@ -293,14 +307,18 @@ backup → restore (documents, chunks, audit rows, users, pgvector extension, em
 
 ### M5 status: what is and is not verified
 
-- Verified here (Docker 29 / Compose 5 in the build environment): the smoke test above, the 14 browser
-  tests (including the admin screens), 314 backend tests and the offline eval gate.
+- Verified here (Docker 29 / Compose 5 in the build environment): the smoke test above (25+ checks), the
+  production image target started with a real (unreachable) LDAP setting (migrations run, `503` for sign-in when
+  the directory is down, the worker survives the missing Ollama, a missing `RUG_SESSION_SECRET` stops the app with a
+  clear message), the 14 browser tests (including the admin screens), the backend tests and the offline eval gate.
 - **Not verified:** sign-in against a real Active Directory (the smoke test uses a mock directory, so the
   whole production sign-in path over TLS is untested); Ollama, the models and the GPU
   (`docker compose … gpu.yml`, the NVIDIA Container Toolkit, `ollama-pull`); **Tesseract in the image** (the
   build environment's network policy blocked Debian's package mirrors, so the smoke image was built with
   `INSTALL_TESSERACT=0`; the production build path that installs it has not been run here, and
-  documents containing images need it); the CIFS/NFS mount options on a real NAS; and real answer quality.
+  documents containing images need it, and the smoke test's corpus contains one, so the smoke stack indexes one file
+  fewer than the synthetic corpus has); the backup scheduler's real daily wake-up (only its next-run arithmetic is
+  checked); the CIFS/NFS mount options on a real NAS; and real answer quality.
 - The image is built as `app` for production; the `smoke` target adds the test harness and must never
   be deployed.
 - The GitHub Actions workflow has `frontend`, `e2e` and `deploy` jobs, but Actions has not run (billing lock).

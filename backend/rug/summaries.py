@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import CursorResult, text
 from sqlalchemy.orm import Session
 
+from rug import embedmeta
 from rug.config import Settings, get_settings
 from rug.db.models import DocumentSummary, QaLog
 from rug.llm import ChatError, ChatModel, Embedder, EmbeddingError
@@ -121,6 +122,7 @@ def summarize_pending(
     poll_s: float = 5.0,
 ) -> Counter[str]:
     s = settings or get_settings()
+    embedmeta.check(db, s)
     counts: Counter[str] = Counter()
     orphans = db.execute(
         text(

@@ -201,3 +201,12 @@ class DocType(Base):
 
     name: Mapped[str] = mapped_column(Text, primary_key=True)
     phrases: Mapped[list[str]] = mapped_column(ARRAY(Text))
+
+
+class IndexMeta(Base):
+    """Small key/value facts about the index, e.g. which embedding model made the vectors."""
+
+    __tablename__ = "index_meta"
+
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
