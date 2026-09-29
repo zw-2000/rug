@@ -61,6 +61,29 @@ class Settings(BaseSettings):
 
     summary_window_chars: int = 9000
 
+    # --- Authentication (Active Directory over LDAP) ---------------------------------------
+    # Users are verified by binding to the directory as themselves (no service-account
+    # secret to store): as DOMAIN\user when ldap_netbios_domain is set, else user@ldap_upn_suffix.
+    ldap_url: str = ""  # e.g. ldaps://dc1.corp.local; empty means login is not configured
+    ldap_start_tls: bool = False  # for ldap:// URLs; ldaps:// is already encrypted
+    ldap_allow_insecure: bool = False  # permit an unencrypted ldap:// bind (development only)
+    ldap_ca_certs_file: str = ""  # PEM bundle to trust for the directory's certificate
+    ldap_timeout_s: int = 8
+    ldap_base_dn: str = ""  # where user entries are searched, e.g. dc=corp,dc=local
+    ldap_upn_suffix: str = ""
+    ldap_netbios_domain: str = ""
+    ldap_admin_group_dn: str = ""  # members may manage folder access; it grants no documents
+
+    # --- Sessions and API ------------------------------------------------------------------
+    session_secret: str = ""  # required to serve; at least 32 characters
+    session_ttl_s: int = 8 * 3600
+    cookie_secure: bool = True  # set false only for plain-http development
+    max_upload_mb: int = 50
+    login_max_failures_user: int = 5  # failed logins per username per window
+    login_max_failures_ip: int = 20  # failed logins per client address per window
+    login_window_s: int = 600
+    trusted_proxies: list[str] = []  # reverse-proxy addresses whose X-Forwarded-For is believed
+
     scan_interval_s: int = 600
     # Refuse a scan that would delete more than this share of the catalog (e.g. the NAS
     # share is not mounted and the mount point is empty). Override with --allow-mass-delete.

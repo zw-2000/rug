@@ -30,6 +30,12 @@ def get_loader(path: Path | str) -> Loader:
         raise UnsupportedFormat(f"no loader registered for {ext!r}") from None
 
 
+def validate(path: Path) -> None:
+    """Raise UnsupportedFormat or ValueError unless `path` is a well-formed file of a
+    registered format."""
+    get_loader(path).validate(path)
+
+
 def load(path: Path) -> LoadedDocument:
     return get_loader(path).load(path)
 
@@ -44,5 +50,6 @@ __all__ = [
     "get_loader",
     "load",
     "register",
+    "validate",
     "supported_extensions",
 ]

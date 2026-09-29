@@ -34,6 +34,7 @@ from rug.config import Settings, get_settings
 from rug.db.models import EMBED_DIM, Chunk, Document, IndexRun
 from rug.llm import Embedder
 from rug.loaders.base import LoaderEnvironmentError
+from rug.paths import safe_doc_path
 from rug.versions import version_key
 
 log = logging.getLogger(__name__)
@@ -91,6 +92,8 @@ def scan_disk(root: Path) -> dict[str, DiskFile]:
                 continue
             if not stat.S_ISREG(st.st_mode):  # symlinks, sockets, ...
                 continue
+            if st.st_size == 0:  # a reserved upload name or an empty save: never a valid document
+                continue
             rel = p.relative_to(root).as_posix()
             found[rel] = DiskFile(rel, st.st_size, st.st_mtime)
     return found
@@ -129,6 +132,35 @@ class Indexer:
         finally:
             lock_conn.execute(select(func.pg_advisory_unlock(_LOCK_KEY)))
             lock_conn.close()
+
+    def sync_one(self, rel: str) -> str:
+        """Index a single file now (used right after an upload). Takes the same lock as a full
+        run, so raises IndexerBusy while one is in progress: the next scan picks the file up.
+        Returns the outcome ("added", "copied", "updated", "unchanged", "failed")."""
+        f = self._disk_file(rel)
+        lock_conn = self.db.get_bind().engine.connect()
+        try:
+            if not lock_conn.execute(select(func.pg_try_advisory_lock(_LOCK_KEY))).scalar():
+                raise IndexerBusy("another indexer run is in progress")
+            try:
+                known = {}
+                doc = self.db.scalars(select(Document).where(Document.path == rel)).first()
+                if doc is not None:
+                    known[rel] = doc
+                outcome = self._sync_file(f, known, {}, {})
+                self.db.commit()
+                return outcome
+            except Exception:
+                self.db.rollback()
+                raise
+        finally:
+            lock_conn.execute(select(func.pg_advisory_unlock(_LOCK_KEY)))
+            lock_conn.close()
+
+    def _disk_file(self, rel: str) -> DiskFile:
+        p = safe_doc_path(self.root, rel)
+        st = p.lstat()
+        return DiskFile(rel, st.st_size, st.st_mtime)
 
     # -- internals ------------------------------------------------------------------------
 
@@ -200,10 +232,7 @@ class Indexer:
 
     def _path(self, f: DiskFile) -> Path:
         """Re-check at open time that the file is still a regular file inside the root."""
-        p = self.root / f.rel
-        if p.is_symlink() or not p.resolve().is_relative_to(self.root.resolve()):
-            raise ValueError(f"refusing symlink or path outside the docs root: {f.rel}")
-        return p
+        return safe_doc_path(self.root, f.rel)
 
     def _sync_file(
         self,

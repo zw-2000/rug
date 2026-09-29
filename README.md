@@ -13,7 +13,7 @@ Built in milestones, each behind a validation gate:
 |---|---|---|
 | M1 | Postgres schema, `.docx` loader (tables, tracked changes, OCR), versions, indexer | **done** |
 | M2 | Resolver, hybrid retrieval, summaries, RAG, `rug ask` / `rug eval` | **done** (see "M2 status") |
-| M3 | AD/LDAP login, per-folder permissions, admin overrides, audit log | |
+| M3 | AD/LDAP login, per-folder permissions, admin overrides, audit log | **done** (see "M3 status") |
 | M4 | Web API + React chat, upload, download | |
 | M5 | Admin UI, Docker Compose + Caddy, backups | |
 
@@ -92,6 +92,74 @@ unanswerable, permission cases).
   against a live server, and real embedding quality.
 - The resolver's thresholds were tuned on this synthetic set; treat the 100% offline scores
   as a regression baseline, not a forecast. Re-check on real filenames.
+
+## Sign-in, permissions, uploads (M3)
+
+`rug serve` runs a small HTTP API (the chat endpoint and the React UI arrive in M4).
+
+- **Sign-in.** The password is verified by binding to Active Directory *as the user* (`CORP\user`
+  or `user@suffix`), so no service-account secret is stored. Empty passwords are refused before
+  the directory is contacted (some directories treat them as an anonymous bind that succeeds).
+  Wrong password and unknown user give the same answer. `ldap://` without StartTLS is refused
+  unless `RUG_LDAP_ALLOW_INSECURE=true`. Failed sign-ins are throttled per username and per
+  address (counted from the audit log; HTTP 429).
+- **Sessions.** Server-side rows; the cookie is a random token signed with `RUG_SESSION_SECRET`
+  (required, 32+ characters; the server will not start without it). HttpOnly, Secure,
+  SameSite=Lax, 8 h absolute lifetime. State-changing requests need the session's token in
+  `X-CSRF-Token` (returned by login and `GET /api/me`). An admin can revoke a user's sessions
+  or disable the user; both take effect on the next request.
+- **Who sees what.** `effective folders = (AD-group→folder map ∪ per-user allows) − per-user denies`,
+  computed on every request; a deny always wins; nothing configured means nothing visible.
+  Map edits apply immediately. **AD group membership is read at login**, so a change in AD
+  applies at that user's next sign-in (or revoke their sessions).
+  - The group key `*` means every signed-in user.
+  - **Admins manage configuration and are granted no documents by default.** Give the admin group
+    folders like any other group. This is a default, not a security boundary: an admin can map
+    or allow any folder for themselves, and every such change is audited.
+  - Files directly in the NAS root have the folder `""`; nobody sees them until an administrator
+    maps `""`.
+- **Status codes.** Download: unknown id 404, existing document you may not access 403. Upload to
+  a folder you may not use: 403 (checked before anything is written). This differs on purpose
+  from the question endpoint's pinned-document behaviour (M2), which gives the same answer for
+  "forbidden" and "does not exist".
+- **Upload** (`POST /api/upload`, multipart `folder` + `file`). Accepted types are the loader
+  registry's extensions (`.docx` today), checked by extension *and* structure (a zip with
+  `word/document.xml`). The size cap (50 MB) is enforced while streaming, not from
+  `Content-Length`. The target folder must already exist (top-level folders are never created).
+  The name is sanitised (client paths, control characters, `<>:"|?*`, reserved Windows names,
+  leading `.`/`~$` are refused or reduced), an existing name gets ` (1)`, ` (2)`… and is never
+  overwritten, and the file is indexed immediately. If the indexer is busy or Ollama is down the
+  file is still saved (`indexed: false`) and the next scan picks it up.
+- **Audit log.** Sign-ins (ok/failed/throttled), sign-outs, downloads, uploads, refused
+  attempts and every administration change are written in the same transaction as the change.
+  A database trigger rejects UPDATE and DELETE on the table. Passwords/tokens are never logged.
+
+Endpoints: `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/me`,
+`GET /api/documents/{id}/download`, `POST /api/upload`, admin: `GET /api/admin/config`,
+`PUT /api/admin/groups`, `PUT /api/admin/overrides`, `POST /api/admin/users/{name}/{revoke|disable|enable}`,
+`GET /api/admin/audit`, and `GET /healthz`.
+
+### M3 status: what is and is not verified
+
+- Verified here (real Postgres 16 + pgvector; ldap3's **mock** directory): login rules, session
+  and CSRF handling, effective-folder maths, download 200/403/404, upload rules, admin edits,
+  audit append-only trigger, and a leak matrix: every golden question asked as five different
+  principals (sales-only, deny beating a group grant, allow override, admin with no mapped
+  group, no groups) with no excerpt, source, candidate or resolved document outside the
+  principal's folders.
+- **Not verified** (no domain controller in the build environment): real TLS/certificate
+  validation against your directory, the exact bind behaviour and lockout policy of your AD,
+  and **nested groups**: `memberOf` lists direct memberships only, so a user who is in a group
+  only through another group is not matched, and the primary group (usually Domain Users) is not
+  listed (map `*` for "everyone"). Test with a real account before relying on it.
+- Behind a reverse proxy, set `RUG_TRUSTED_PROXIES`; otherwise every client shares the proxy's
+  address and the per-address login limit becomes company-wide.
+- An upload's body is parsed (and spooled to the app's temp directory) before the folder check,
+  so a forbidden upload never touches the NAS but does briefly use temp space (capped at the
+  upload size limit). Every other request body is capped at 64 KB.
+- The leak matrix calls `Rag.ask` with folders from `effective_folders` directly; the
+  session → folders → ask wiring is tested once M4 adds the chat endpoint.
+- Requests run on synchronous database sessions; fine for a small team, revisit if the load grows.
 
 ## Development setup
 
