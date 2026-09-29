@@ -535,3 +535,15 @@ def test_large_bodies_are_refused_on_every_route(env):
     ann, csrf = env.login("ann")
     big = {"group_dn": SALES, "folders": ["f"] * 100_000}
     assert ann.put("/api/admin/groups", headers=csrf, json=big).status_code == 413
+
+
+def test_unwritable_share_is_a_clear_error_not_a_crash(env, monkeypatch):
+    def denied(*_a, **_k):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr("rug.api.app.store", denied)
+    ann, csrf = env.login("ann")
+    r = up(ann, csrf, "sales", "x.docx", small_docx())
+    assert r.status_code == 500 and "document share" in r.json()["detail"]
+    assert "Permission denied" not in r.text  # no internals
+    assert "upload.failed" in env.audit_actions()

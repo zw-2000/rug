@@ -7,6 +7,7 @@
 #  - dumps contain the full text of every indexed document plus the audit and Q&A logs:
 #    protect the folder like the NAS itself
 set -eu
+umask 077  # dumps hold every document's text: readable by the owner only
 
 DIR="${BACKUP_DIR_IN_CONTAINER:-/backups}"
 KEEP="${BACKUP_KEEP:-14}"

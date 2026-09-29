@@ -76,6 +76,8 @@ $COMPOSE exec -T backup psql -d postgres -qc 'DROP DATABASE rug_restore_check WI
 for _ in 1 2 3; do sleep 1; $COMPOSE exec -T -e BACKUP_KEEP=2 backup sh /backup.sh once >/dev/null; done
 kept=$(ls -1 backups-smoke/rug-*.dump | wc -l)
 [ "$kept" = "2" ] && pass "retention keeps the newest 2 by count" || fail "retention left $kept files"
+mode=$(stat -c '%a' "$(ls -1 backups-smoke/rug-*.dump | head -1)")
+[ "$mode" = "600" ] && pass "dump files are owner-only (mode $mode)" || fail "dump files have mode $mode"
 leftover=$(ls -a backups-smoke | grep -c '\.part' || true)
 [ "$leftover" = "0" ] && pass "no partial dump files left behind" || fail "partial dump files present"
 

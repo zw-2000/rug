@@ -355,6 +355,15 @@ def create_app(
             audit.log(db, p.username, "upload.rejected", folder, {"reason": e.reason}, ip)
             db.commit()
             raise HTTPException(e.status, e.reason) from None
+        except OSError:
+            # e.g. the share is mounted read-only or not writable by the server's user
+            log.exception("could not write an upload into %s", root)
+            audit.log(db, p.username, "upload.failed", folder, {"reason": "share not writable"}, ip)
+            db.commit()
+            raise HTTPException(
+                500,
+                "The server could not save the file to the document share. Tell an administrator.",
+            ) from None
         finally:
             await form.close()
         audit.log(db, p.username, "upload", rel, ip=ip)
