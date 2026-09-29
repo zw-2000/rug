@@ -1,7 +1,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 from alembic import command
@@ -10,6 +10,9 @@ from sqlalchemy import func, select
 
 from rug.config import get_settings
 from rug.db import Chunk, Document, make_session
+
+if TYPE_CHECKING:
+    from rug.rag import Answer
 
 app = typer.Typer(no_args_is_help=True, help="rug: local document Q&A")
 
@@ -78,6 +81,22 @@ def stats() -> None:
     typer.echo(f"{'chunks':20} {chunks:6}")
 
 
+def format_answer(answer: "Answer") -> str:
+    """Terminal rendering of a validated answer: the text once, then each source labelled with
+    the excerpt numbers the text cites (not with its position in the list)."""
+    lines = [answer.text]
+    lines += [f"  ? {c.doc.folder}/{c.doc.filename}  (id {c.doc.id})" for c in answer.candidates]
+    if answer.sources:
+        lines.append("")
+    for src in answer.sources:
+        labels = ", ".join(str(n) for n in src.refs)
+        sections = "; ".join(src.sections) or "-"
+        lines.append(f"[{labels}] {src.path}  ({src.n_versions} version(s))  sections: {sections}")
+    if answer.note:
+        lines.append(f"note: {answer.note}")
+    return "\n".join(lines)
+
+
 @app.command()
 def summarize(
     limit: int = typer.Option(None, help="Summarise at most this many documents"),
@@ -109,7 +128,7 @@ def ask(
     import uuid
 
     from rug.llm import ChatError, EmbeddingError, OllamaChat, OllamaEmbedder
-    from rug.rag import DocumentNotAvailable, Rag
+    from rug.rag import DocumentNotAvailable, QuestionTooLong, Rag
     from rug.scope import all_folders
 
     chat, embedder = OllamaChat(), OllamaEmbedder()
@@ -122,28 +141,18 @@ def ask(
     with make_session() as db:
         allowed = frozenset(folders.split(",")) if folders else all_folders(db)
         try:
+            # No token streaming here: the model's raw output is only shown once it has been
+            # validated (citations checked, not-found normalised, stream known to be complete).
             answer = Rag(db, embedder, chat).ask(
-                question,
-                folders=allowed,
-                pinned=uuid.UUID(doc) if doc else None,
-                on_token=lambda t: typer.echo(t, nl=False),
+                question, folders=allowed, pinned=uuid.UUID(doc) if doc else None
             )
         except DocumentNotAvailable:
             typer.echo("ERROR document not found", err=True)
             raise typer.Exit(1) from None
-        except (ChatError, EmbeddingError) as e:
-            typer.echo(f"\nERROR {e}", err=True)
+        except (ChatError, EmbeddingError, QuestionTooLong) as e:
+            typer.echo(f"ERROR {e}", err=True)
             raise typer.Exit(1) from e
-        if answer.status != "answered":
-            typer.echo(answer.text)
-        for c in answer.candidates:
-            typer.echo(f"  ? {c.doc.folder}/{c.doc.filename}  (id {c.doc.id})")
-        typer.echo("")
-        for i, src in enumerate(answer.sources, 1):
-            sections = "; ".join(src.sections) or "-"
-            typer.echo(f"[{i}] {src.path}  ({src.n_versions} version(s))  sections: {sections}")
-        if answer.note:
-            typer.echo(f"note: {answer.note}")
+        typer.echo(format_answer(answer))
 
 
 @app.command("eval")

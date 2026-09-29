@@ -71,7 +71,7 @@ Built in milestones, each behind a validation gate:
 
 ### Evaluation
 
-`eval/golden.yaml` holds 54 questions over the synthetic corpus (named documents, find-the-doc,
+`eval/golden.yaml` holds 55 questions over the synthetic corpus (named documents, find-the-doc,
 unanswerable, permission cases).
 
 - `rug eval --offline` (and CI): deterministic metrics only — right document, key facts
@@ -82,7 +82,7 @@ unanswerable, permission cases).
 
 ### M2 status: what is and is not verified
 
-- Verified here (128 tests, real Postgres 16 + pgvector 0.6): scope enforcement, resolver
+- Verified here (137 tests, real Postgres 16 + pgvector 0.6): scope enforcement, resolver
   behaviour, hybrid retrieval including the exact/index paths, chat-stream handling,
   citation validation, the offline evaluation gate.
 - **Not verified** (no Ollama/GPU in the build environment): real-model answer quality

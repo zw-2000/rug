@@ -144,9 +144,11 @@ def test_overview_questions_get_the_summary_and_key_sections(corpus):
     assert "OVERVIEW-MARKER" not in chat2.calls[0][1]["content"]
 
 
-def test_excerpts_respect_the_context_budget(corpus):
-    answer = rag(corpus, context_char_budget=900).ask(Q, folders=ALL)
-    assert answer.excerpts and sum(len(e.text) for e in answer.excerpts) <= 900
+def test_the_whole_prompt_respects_the_context_budget(corpus):
+    chat = FakeChat(echo_first_excerpt)
+    answer = rag(corpus, chat, context_char_budget=2000).ask(Q, folders=ALL)
+    assert answer.excerpts and answer.status == "answered"
+    assert sum(len(m["content"]) for m in chat.calls[0]) <= 2000  # system + question + excerpts
 
 
 def test_find_the_document_ranks_the_right_one_first(corpus):
@@ -181,3 +183,17 @@ def test_amounts_and_terms_stay_in_the_retrieval_text(corpus):
     atlas = corpus.id("delivery/Atlas Retail SR-4410 SOW.docx")
     pinned = rag(corpus, chat).ask("payment terms net 45", folders=ALL, pinned=atlas)
     assert pinned.mode == "pinned" and any("net 45" in e.text for e in pinned.excerpts)
+
+
+def test_long_questions_cannot_push_the_prompt_past_the_budget(corpus):
+    from rug.rag import QuestionTooLong
+
+    chat = FakeChat(echo_first_excerpt)
+    settings = dict(context_char_budget=4000, max_question_chars=2000)
+    long_q = Q + " " + "please consider the following background. " * 35  # ~1500 chars
+    answer = rag(corpus, chat, **settings).ask(long_q, folders=ALL)
+    prompt_chars = sum(len(m["content"]) for m in chat.calls[0])
+    assert answer.excerpts and prompt_chars <= 4000
+
+    with pytest.raises(QuestionTooLong):
+        rag(corpus, chat, **settings).ask("x" * 2500, folders=ALL)

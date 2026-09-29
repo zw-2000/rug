@@ -117,3 +117,37 @@ def test_new_commands_are_registered():
     out = CliRunner().invoke(app, ["--help"]).output
     for cmd in ("ask", "summarize", "eval", "ingest", "migrate"):
         assert cmd in out
+
+
+def test_find_answers_must_contain_the_required_facts_too():
+    doc = _doc("sales")
+    doc = DocRow(doc.id, doc.path, doc.folder, "x.docx", "X", "filename", "x", 1.0, "h", 1)
+    q = {
+        "id": "f",
+        "kind": "find",
+        "doc": "x.docx",
+        "q": "which?",
+        "facts": [["SD-WAN"]],
+        "_all": ALL,
+    }
+    files = {doc.id: "x.docx"}
+    ex = Excerpt(1, 1, doc.id, "sales", "X", "S", "The SD-WAN migration SOW")
+    src = Source(doc.id, "x.docx", "X", "sales", doc.path, ["S"], [1], "snip", 1)
+    right_doc_no_facts = Answer("answered", "See the document [1].", sources=[src], excerpts=[ex])
+    assert score(q, frozenset(ALL), right_doc_no_facts, files).checks["answer"] is False
+    with_facts = Answer("answered", "The SD-WAN SOW [1].", sources=[src], excerpts=[ex])
+    assert score(q, frozenset(ALL), with_facts, files).checks["answer"] is True
+
+
+def test_ask_output_shows_the_validated_answer_once_with_the_real_citation_labels():
+    from rug.cli import format_answer
+
+    doc = _doc("sales")
+    s1 = Source(doc.id, "a.docx", "A", "sales", "sales/a.docx", ["Fees", "Terms"], [2, 3], "x", 2)
+    ok = Answer("answered", "Fee is 5 [2]. Terms apply [3].", sources=[s1])
+    out = format_answer(ok)
+    assert out.count("Fee is 5 [2]. Terms apply [3].") == 1
+    assert "[2, 3] sales/a.docx" in out  # labelled by excerpt numbers, not list position
+
+    nf = format_answer(Answer("not_found", NOT_FOUND))
+    assert nf.count(NOT_FOUND) == 1

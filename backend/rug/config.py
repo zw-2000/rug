@@ -41,9 +41,11 @@ class Settings(BaseSettings):
     retrieval_top_k: int = 8
     retrieval_candidates: int = 50  # per branch (keyword / vector) before fusion
     rrf_k: int = 60
-    # Characters of excerpts sent to the model (~4 chars/token, leaving room for the
-    # system prompt, summary and answer inside chat_num_ctx).
+    # Ceiling on the WHOLE prompt in characters (system prompt, question, overview, excerpt
+    # headers and bodies; ~4 chars/token), leaving room for the answer inside chat_num_ctx.
     context_char_budget: int = 16000
+    max_question_chars: int = 2000  # longer questions are rejected, not silently truncated
+    summary_prompt_chars: int = 1500
     # Scopes with at most this many chunks are scored exactly; larger ones use the HNSW
     # index (approximate when filtered) and fall back to exact if it under-delivers.
     exact_scan_max_chunks: int = 100_000
@@ -52,7 +54,7 @@ class Settings(BaseSettings):
     # Document-name resolution (thresholds are tuned on the synthetic corpus; re-check
     # them against real filenames).
     resolver_accept_named: float = 0.75  # query names a document without an ID
-    resolver_accept_id: float = 0.6  # query contains a document ID
+    resolver_accept_id: float = 0.5  # query contains a document ID
     resolver_margin: float = 0.12  # runners-up this close to the winner make it ambiguous
     resolver_max_candidates: int = 5
     id_pattern: str = r"(?<![A-Za-z0-9])([A-Za-z]{2,6})([-_ ]?)(\d{2,})(?![A-Za-z0-9])"

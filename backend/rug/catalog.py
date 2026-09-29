@@ -33,13 +33,17 @@ class DocRow:
 
 # Reused by search.py so both sides agree on what "current" means.
 CURRENT_DOCS_SQL = """
-    SELECT d.id FROM (
-        SELECT d.*, max(d.mtime) OVER w AS newest
-        FROM documents d
-        WHERE d.status = 'ok' AND d.folder = ANY(CAST(:folders AS text[]))
-        WINDOW w AS (PARTITION BY d.folder, d.version_key)
-    ) d
-    WHERE d.mtime = d.newest
+    SELECT r.id FROM (
+        SELECT DISTINCT ON (d.folder, d.version_key, d.sha256) d.id
+        FROM (
+            SELECT d.id, d.folder, d.version_key, d.sha256, d.filename, d.mtime,
+                   max(d.mtime) OVER (PARTITION BY d.folder, d.version_key) AS newest
+            FROM documents d
+            WHERE d.status = 'ok' AND d.folder = ANY(CAST(:folders AS text[]))
+        ) d
+        WHERE d.mtime = d.newest
+        ORDER BY d.folder, d.version_key, d.sha256, length(d.filename), d.filename
+    ) r
 """
 
 _ROWS_SQL = text(

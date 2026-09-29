@@ -140,7 +140,7 @@ def score(
         found_doc = q["kind"] != "find" or q["doc"] in {s.filename for s in answer.sources}
         r.checks["answer"] = (
             answered
-            and has_all(answer.text, groups if q["kind"] == "named" else [])
+            and has_all(answer.text, groups)
             and not has_any(answer.text, q.get("absent", []))
             and found_doc
         )

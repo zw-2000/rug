@@ -164,3 +164,31 @@ def test_ids_are_only_recognised_in_series_the_scope_uses(corpus):
     res = resolve(corpus, "SR-1098 net 45 GST 10")
     assert [m.norm for m in res.ids] == ["SR1098"]
     assert "net 45" in res.topic and "GST 10" in res.topic
+
+
+def test_a_known_id_cannot_mask_an_unknown_one(corpus):
+    res = resolve(corpus, "SR-1098 CR-77 cost")
+    assert res.kind == "unknown_id" and res.unknown_ids == ["CR77"]
+
+
+def test_a_document_is_found_by_any_one_of_its_ids(corpus):
+    assert names(resolve(corpus, "CR-01")) == ["Boost Connect SR-1098 CR-01.docx"]
+    assert names(resolve(corpus, "what does CR-01 change?")) == ["Boost Connect SR-1098 CR-01.docx"]
+    # SR-1098 alone still prefers the document whose IDs are exactly that
+    assert names(resolve(corpus, "SR-1098")) == ["Boost Connect SR-1098 SOW v2 FINAL.docx"]
+
+
+def test_a_version_tie_is_never_broken_by_the_name_score(db, embedder, docs_dir):
+    from docx import Document as Docx
+
+    _tiny(docs_dir / "sales" / "Vega SOW SR-6000 v1.docx", "one")
+    p = docs_dir / "sales" / "Vega SOW SR-6000 v2.docx"  # same mtime, different bytes, own title
+    p.parent.mkdir(parents=True, exist_ok=True)
+    d = Docx()
+    d.add_paragraph("Vega Platform Statement", style="Title")
+    d.add_paragraph("two")
+    d.save(str(p))
+    os.utime(p, (1_780_000_000, 1_780_000_000))
+    Indexer(db, embedder, docs_dir).run()
+    res = Resolver(db).resolve("Vega Platform Statement SR-6000", folders={"sales"})
+    assert res.kind == "ambiguous" and len(res.candidates) == 2

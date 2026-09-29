@@ -118,3 +118,25 @@ def test_overview_chunks_come_from_key_sections_in_order(corpus):
         "scope" in h.heading_path.lower() or "overview" in h.heading_path.lower() for h in hits
     )
     assert [h.ord for h in hits] == sorted(h.ord for h in hits)
+
+
+def test_identical_copies_take_one_slot_not_several(db, embedder, docs_dir):
+    import shutil
+
+    from test_indexer import make_docx
+
+    from rug.indexer import Indexer
+
+    make_docx(docs_dir / "sales" / "Dup SOW.docx", "shared payment terms")
+    shutil.copy2(docs_dir / "sales" / "Dup SOW.docx", docs_dir / "sales" / "Dup SOW (1).docx")
+    make_docx(docs_dir / "sales" / "Other SOW.docx", "shared payment terms differ slightly")
+    Indexer(db, embedder, docs_dir).run()
+    search = PgSearch(db)
+    hits = search.hybrid(
+        folders={"sales"},
+        query_text="shared payment terms",
+        query_vec=embedder.embed_query("shared payment terms"),
+        limit=20,
+    )
+    docs = {h.document_id for h in hits}
+    assert len(docs) == 2  # one representative of the identical pair, plus the other document

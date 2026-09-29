@@ -179,9 +179,12 @@ class Resolver:
         typed = detect_types(strip_ids(query, q_matches), self.vocab)
         q_types = typed | {m.prefix for m in q_matches if m.prefix in self.vocab}
 
-        # A named ID from a series this scope uses, but that no visible document carries.
-        if q_ids and not (q_ids & known_ids):
-            return Resolution("unknown_id", topic=query, unknown_ids=sorted(q_ids), ids=q_matches)
+        # Any named ID from a series this scope uses but that no visible document carries makes
+        # the question unanswerable, even if other IDs in it do exist: answering from those
+        # would silently drop the part the user asked about.
+        unknown = q_ids - known_ids
+        if unknown:
+            return Resolution("unknown_id", topic=query, unknown_ids=sorted(unknown), ids=q_matches)
 
         df: Counter[str] = Counter()
         for f in feats:
@@ -198,8 +201,13 @@ class Resolver:
             )
             inter = q_ids & f.ids
             if q_ids:
-                id_score = len(inter) / len(q_ids | f.ids) if inter else 0.0
-                score = 0.7 * id_score + 0.3 * cov if inter else 0.15 * cov
+                # Containment (does the document carry every ID asked for?) decides; the
+                # exactness of the match (Jaccard) only orders documents that all carry it,
+                # so "SR-1098" prefers the SOW over its change request, yet "CR-01" alone
+                # still finds the change request despite its extra ID.
+                contained = len(inter) / len(q_ids)
+                exact = len(inter) / len(q_ids | f.ids)
+                score = 0.4 * contained + 0.3 * exact + 0.3 * cov if inter else 0.15 * cov
             else:
                 score = cov
             if q_types and f.types:
@@ -217,6 +225,21 @@ class Resolver:
         needed = self.s.resolver_accept_id if top.id_match else self.s.resolver_accept_named
         if top.score < needed:
             return Resolution("none", topic=query, scored=weak, ids=q_matches)
+
+        if top.doc.tie:  # distinct files sharing the newest mtime: the user picks, not the score
+            group = [
+                c
+                for c in scored
+                if (c.doc.folder, c.doc.version_key) == (top.doc.folder, top.doc.version_key)
+            ]
+            if len(group) > 1:
+                return Resolution(
+                    "ambiguous",
+                    group[: self.s.resolver_max_candidates],
+                    topic=query,
+                    scored=weak,
+                    ids=q_matches,
+                )
 
         close = [c for c in scored if c.score >= top.score - self.s.resolver_margin]
         close = close[: self.s.resolver_max_candidates]

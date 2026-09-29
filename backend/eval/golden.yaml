@@ -157,6 +157,8 @@ questions:
   # ---- cannot be answered: the reply must be "not found" -------------------------------
   - {id: u-unknown-id, kind: unanswerable, det: true, q: "Acme SR-9999 SOW scope"}
   - {id: u-unknown-cr, kind: unanswerable, det: true, q: "What is in CR-77 for Boost Connect?"}
+  # A known ID (SR-1098) must not mask an unknown one (CR-77) in the same question.
+  - {id: u-mixed-ids, kind: unanswerable, det: true, q: "SR-1098 CR-77 cost"}
   - {id: u-penalty, kind: unanswerable,
      q: "What penalty rate applies to late delivery in the Harbor Logistics SOW?"}
   - {id: u-ceo, kind: unanswerable, q: "Who is the CEO of Harbor Logistics?"}

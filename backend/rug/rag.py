@@ -52,6 +52,10 @@ _OVERVIEW = re.compile(
 _CITE = re.compile(r"\[(\d+(?:\s*[,;]\s*\d+)*)\]")
 
 
+class QuestionTooLong(ValueError):
+    """The question exceeds `max_question_chars`; it would crowd the evidence out of the prompt."""
+
+
 class DocumentNotAvailable(LookupError):
     """A pinned document does not exist or is outside the caller's scope (same signal for both)."""
 
@@ -147,6 +151,10 @@ class Rag:
         on_token: Callable[[str], None] | None = None,
     ) -> Answer:
         folders = frozenset(folder_list(folders))  # also rejects a bare string
+        if len(query) > self.s.max_question_chars:
+            raise QuestionTooLong(
+                f"question is {len(query)} characters; the limit is {self.s.max_question_chars}"
+            )
         if pinned is not None:
             doc = fetch_document(self.db, pinned, folders=folders)
             if doc is None:
@@ -240,22 +248,26 @@ class Rag:
 
     # -- shared ---------------------------------------------------------------------------
 
-    def _excerpts(self, hits: Sequence[Hit], docs: dict[uuid.UUID, DocRow]) -> list[Excerpt]:
-        budget = self.s.context_char_budget
+    def _excerpts(
+        self, hits: Sequence[Hit], docs: dict[uuid.UUID, DocRow], budget: int
+    ) -> list[Excerpt]:
+        """Fit excerpts into `budget` characters, counting each one's header as well as its body."""
         out: list[Excerpt] = []
         for h in hits:
             doc = docs.get(h.document_id)
             if doc is None:
                 continue
-            if out and budget < 400:
+            header = len(doc.title) + len(h.heading_path) + 16  # "[n] title — heading\n"
+            room = budget - header
+            if room < (400 if out else 200):
                 break
-            body = h.text[:budget]
+            body = h.text[:room]
             out.append(
                 Excerpt(
                     len(out) + 1, h.chunk_id, doc.id, doc.folder, doc.title, h.heading_path, body
                 )
             )
-            budget -= len(body)
+            budget -= header + len(body) + 2  # 2 = the blank line between excerpts
         return out
 
     def _answer(
@@ -270,7 +282,18 @@ class Rag:
         hint: str = "",
     ) -> Answer:
         docs = documents_by_id(self.db, list({h.document_id for h in hits}), folders=folders)
-        excerpts = self._excerpts(hits, docs)
+        if summary:
+            summary = summary[: self.s.summary_prompt_chars]
+        # Everything in the prompt except the excerpts is charged against the same budget.
+        fixed = (
+            len(SYSTEM_PROMPT)
+            + len(query)
+            + len(hint)
+            + len(summary or "")
+            + (140 if summary else 0)
+            + 80
+        )
+        excerpts = self._excerpts(hits, docs, self.s.context_char_budget - fixed)
         if not excerpts:
             return Answer("not_found", NOT_FOUND, resolved=resolved, mode=mode)
 
