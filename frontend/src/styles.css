@@ -119,3 +119,18 @@ main { padding-top: 1rem; }
 .composer textarea { flex: 1; min-width: 12rem; resize: vertical; }
 .chip { flex-basis: 100%; margin: 0; font-size: 0.9rem; }
 @media (max-width: 30rem) { .shell { padding: 0 0.6rem 7rem; } }
+.subtabs { display: flex; gap: 0.3rem; flex-wrap: wrap; margin: 0.5rem 0 1rem; }
+table { width: 100%; border-collapse: collapse; margin: 0.5rem 0 1rem; font-size: 0.92rem; }
+th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+.row-actions { white-space: nowrap; }
+.card { border: 1px solid var(--line); border-radius: 10px; margin: 0.6rem 0; padding: 0.5rem 0.9rem 0.8rem; background: var(--panel); }
+.card legend { font-weight: 600; padding: 0 0.3rem; word-break: break-all; }
+.checks { display: flex; flex-wrap: wrap; gap: 0.3rem 1.2rem; margin-bottom: 0.6rem; }
+.check { display: flex; align-items: center; gap: 0.4rem; margin: 0; font-weight: 400; }
+.check input { width: auto; margin: 0; }
+.inline { display: flex; gap: 0.8rem; align-items: flex-end; flex-wrap: wrap; margin: 0.6rem 0; }
+.inline label { margin: 0; flex: 1; min-width: 10rem; }
+.pre { white-space: pre-wrap; margin: 0.2rem 0; }
+details summary { cursor: pointer; }
+.shell.wide { max-width: 70rem; }

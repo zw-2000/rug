@@ -1,0 +1,11 @@
+# Adds the NVIDIA GPU to Ollama. Needs the NVIDIA Container Toolkit on the host
+# (not verifiable in the build environment: check `docker run --gpus all ... nvidia-smi` first).
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -3,7 +3,7 @@ a mock Active Directory, the synthetic corpus, and FAKE models (hash embeddings 
 "chat" that quotes the first excerpt). It proves the plumbing end to end, not answer quality.
 
     RUG_E2E_DATABASE_URL=postgresql+psycopg://rug:rug@localhost:5432/rug_e2e \\
-      python -m eval.e2e_server --port 8765 --static ../frontend/dist
+      python -m harness.e2e_server --port 8765 --static ../frontend/dist
 
 The database is wiped on start, so its name must end in _e2e or _test.
 """
@@ -13,6 +13,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import docx
@@ -22,8 +23,8 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from eval.fakes import ExtractiveChat, HashEmbedder
-from eval.ldapmock import MockDirectory
 from eval.synthetic_gen import build
+from harness.ldapmock import MockDirectory
 from rug import perms
 from rug.api.app import create_app
 from rug.auth.ldap import LdapAuthenticator
@@ -42,9 +43,36 @@ USERS = {
 }
 
 
+class SlowChat(ExtractiveChat):
+    """The extractive fake, but streamed word by word with a pause between words."""
+
+    def __init__(self, delay: float):
+        self.delay = delay
+
+    def chat(self, messages, on_token=None):  # type: ignore[no-untyped-def]
+        words: list[str] = []
+        text = super().chat(messages, None)
+        for w in text.split(" "):
+            words.append(w)
+            if on_token:
+                on_token(w + " ")
+                time.sleep(self.delay)
+        return " ".join(words)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument(
+        "--token-delay",
+        type=float,
+        default=0.0,
+        help="Seconds between streamed words of the fake model (to test that nothing buffers)",
+    )
+    ap.add_argument(
+        "--secure-cookies", action="store_true", help="Secure cookies (when behind TLS, e.g. Caddy)"
+    )
     ap.add_argument("--static", default="")
     ap.add_argument("--docs", default="", help="Folder to build the corpus in (emptied first)")
     args = ap.parse_args()
@@ -79,7 +107,7 @@ def main() -> None:
         ldap_base_dn="dc=corp,dc=local",
         ldap_netbios_domain="CORP",
         ldap_admin_group_dn=ADMINS,
-        cookie_secure=False,  # plain http on localhost; the production flags are tested elsewhere
+        cookie_secure=args.secure_cookies,  # off for plain http on localhost
         static_dir=args.static,
     )
     engine = get_engine(url)
@@ -87,7 +115,8 @@ def main() -> None:
         c.execute(
             text(
                 "DROP TABLE IF EXISTS chunks, documents, document_summaries, index_runs, users, "
-                "sessions, group_folders, user_overrides, audit_log, qa_log, alembic_version"
+                "sessions, group_folders, user_overrides, audit_log, qa_log, doc_types, "
+                "index_meta, alembic_version"
             )
         )
     alembic_upgrade(url)
@@ -105,10 +134,10 @@ def main() -> None:
         session_factory=factory,
         authenticator=LdapAuthenticator(settings, directory),
         embedder=embedder,
-        chat_model=ExtractiveChat(),
+        chat_model=SlowChat(args.token_delay) if args.token_delay else ExtractiveChat(),
     )
     print(f"E2E server: docs in {docs}", flush=True)
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning", proxy_headers=False)
 
 
 if __name__ == "__main__":

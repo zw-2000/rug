@@ -11,3 +11,8 @@ data/
 build/
 dist/
 .e2e-docs/
+deploy/.env
+deploy/backups/
+deploy/smoke.env
+deploy/backups-smoke/
+deploy/smoke-ca.crt

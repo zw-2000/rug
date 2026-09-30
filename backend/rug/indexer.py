@@ -21,6 +21,7 @@ import os
 import stat
 import uuid
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -28,7 +29,7 @@ from pathlib import Path, PurePosixPath
 from sqlalchemy import delete, func, inspect, select, text
 from sqlalchemy.orm import Session
 
-from rug import loaders
+from rug import embedmeta, loaders
 from rug.chunking import chunk_sections
 from rug.config import Settings, get_settings
 from rug.db.models import EMBED_DIM, Chunk, Document, IndexRun
@@ -124,6 +125,7 @@ class Indexer:
     def run(self) -> IndexRun:
         if not self.root.is_dir():
             raise FileNotFoundError(f"docs dir not found: {self.root}")
+        embedmeta.check(self.db, self.s)
         lock_conn = self.db.get_bind().engine.connect()
         try:
             if not lock_conn.execute(select(func.pg_try_advisory_lock(_LOCK_KEY))).scalar():
@@ -133,10 +135,56 @@ class Indexer:
             lock_conn.execute(select(func.pg_advisory_unlock(_LOCK_KEY)))
             lock_conn.close()
 
+    def reembed_all(self, on_progress: Callable[[int, int], None] | None = None) -> dict[str, int]:
+        """Rebuild every chunk and summary vector with the configured embedding model, then
+        record it. Until it finishes the index is marked unusable, so an interrupted run cannot
+        leave a half-old, half-new index that looks healthy; run it again to finish."""
+        from rug.db.models import DocumentSummary
+
+        lock_conn = self.db.get_bind().engine.connect()
+        try:
+            if not lock_conn.execute(select(func.pg_try_advisory_lock(_LOCK_KEY))).scalar():
+                raise IndexerBusy("another indexer run is in progress")
+            embedmeta.record(self.db, embedmeta.fingerprint(self.s) + embedmeta.UNFINISHED)
+            ids = list(
+                self.db.scalars(
+                    select(Document.id).where(Document.status == "ok").order_by(Document.id)
+                )
+            )
+            for n, doc_id in enumerate(ids, 1):
+                doc = self.db.get(Document, doc_id)
+                if doc is not None:
+                    self._reembed(doc)
+                self.db.commit()
+                if on_progress:
+                    on_progress(n, len(ids))
+            summaries = 0
+            for row in list(self.db.scalars(select(DocumentSummary))):
+                row.embedding = self.embedder.embed_documents([row.summary])[0]
+                summaries += 1
+            self.db.commit()
+            embedmeta.record(self.db, embedmeta.fingerprint(self.s))
+            return {"documents": len(ids), "summaries": summaries}
+        finally:
+            lock_conn.execute(select(func.pg_advisory_unlock(_LOCK_KEY)))
+            lock_conn.close()
+
+    def is_busy(self) -> bool:
+        """True while another process holds the indexer lock (a scan is running)."""
+        conn = self.db.get_bind().engine.connect()
+        try:
+            got = bool(conn.execute(select(func.pg_try_advisory_lock(_LOCK_KEY))).scalar())
+            if got:
+                conn.execute(select(func.pg_advisory_unlock(_LOCK_KEY)))
+            return not got
+        finally:
+            conn.close()
+
     def sync_one(self, rel: str) -> str:
         """Index a single file now (used right after an upload). Takes the same lock as a full
         run, so raises IndexerBusy while one is in progress: the next scan picks the file up.
         Returns the outcome ("added", "copied", "updated", "unchanged", "failed")."""
+        embedmeta.check(self.db, self.s)
         f = self._disk_file(rel)
         lock_conn = self.db.get_bind().engine.connect()
         try:

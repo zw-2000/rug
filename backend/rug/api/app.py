@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from rug import audit, perms
+from rug.api.admin import register_admin
 from rug.api.chat import register_chat
 from rug.auth import sessions
 from rug.auth.ldap import AuthError, DirectoryUnavailable, LdapAuthenticator
@@ -354,6 +355,15 @@ def create_app(
             audit.log(db, p.username, "upload.rejected", folder, {"reason": e.reason}, ip)
             db.commit()
             raise HTTPException(e.status, e.reason) from None
+        except OSError:
+            # e.g. the share is mounted read-only or not writable by the server's user
+            log.exception("could not write an upload into %s", root)
+            audit.log(db, p.username, "upload.failed", folder, {"reason": "share not writable"}, ip)
+            db.commit()
+            raise HTTPException(
+                500,
+                "The server could not save the file to the document share. Tell an administrator.",
+            ) from None
         finally:
             await form.close()
         audit.log(db, p.username, "upload", rel, ip=ip)
@@ -393,6 +403,10 @@ def create_app(
         admin=admin,
         embedder=embedder,
         chat_model=chat_model,
+    )
+
+    register_admin(
+        app, s=s, factory=factory, get_db=get_db, admin=admin, ip_of=ip_of, embedder=embedder
     )
 
     # -- administration -----------------------------------------------------------------

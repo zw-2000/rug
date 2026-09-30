@@ -42,6 +42,7 @@ eval = ["golden.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]  # harness/ (mock directory, browser-test server) is not an installed package
 
 [tool.ruff]
 line-length = 100
@@ -53,6 +54,9 @@ select = ["E", "F", "I", "B", "UP"]
 [tool.ruff.lint.isort]
 known-first-party = ["rug", "eval"]
 known-third-party = ["alembic"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]  # long literals in assertions read better unwrapped
 
 [tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = ["typer.Option", "typer.Argument", "fastapi.Depends"]

@@ -15,7 +15,7 @@ Built in milestones, each behind a validation gate:
 | M2 | Resolver, hybrid retrieval, summaries, RAG, `rug ask` / `rug eval` | **done** (see "M2 status") |
 | M3 | AD/LDAP login, per-folder permissions, admin overrides, audit log | **done** (see "M3 status") |
 | M4 | Web API + React chat, upload, download | **done** (see "M4 status") |
-| M5 | Admin UI, Docker Compose + Caddy, backups | |
+| M5 | Admin UI, Docker Compose + Caddy, backups | **done** (see "M5 status") |
 
 ## How indexing works (M1)
 
@@ -194,7 +194,7 @@ on the share; accepted types and the size limit come from the server). The admin
 Tests: `pytest` covers the endpoints (including the permission-leak check through HTTP: a sales-only
 user asking every golden question sees no other folder's documents, filenames or text).
 `cd frontend && npm test` runs unit tests (SSE parser, citation rendering) and `npm run e2e` runs
-Playwright in Chromium against `backend/eval/e2e_server.py`: sign in, ask the SR-1098 question, see
+Playwright in Chromium against `backend/harness/e2e_server.py`: sign in, ask the SR-1098 question, see
 the cited answer, download the file and compare its checksum with the one on disk; plus wrong
 password, cross-folder access (403), the picker, feedback, sign-out and upload.
 
@@ -213,6 +213,119 @@ password, cross-folder access (403), the picker, feedback, sign-out and upload.
   simulate a disconnect); check it against a real Ollama.
 - npm 10.9 crashed resolving peer dependencies for the newest Vite/Vitest majors, so
   `frontend/.npmrc` sets `legacy-peer-deps=true`. Versions are pinned by `package-lock.json`.
+
+## Deployment and administration (M5)
+
+### Admin screens
+
+Administrators (members of `RUG_LDAP_ADMIN_GROUP_DN`) get an **Admin** tab: **Access** (which AD
+group sees which folders; per-person allow/deny exceptions), **Users** (last sign-in, sign out
+everywhere, disable/enable), **Document types** (the words the resolver treats as SOW, change
+request, MSA, NDA, …; an empty list means the built-in defaults), **Index** (counts, recent scans,
+files that could not be read, "Scan now"), **Questions** (the question log with a thumbs-down filter and
+an export shaped like `eval/golden.yaml`; also `rug export-feedback FILE`), and **Audit log**. The
+tab is hidden from everyone else and every endpoint refuses non-admins on the server.
+
+Changing the document-type vocabulary changes resolver scoring. Re-run `rug eval` after edits you care about.
+
+### Background worker
+
+`rug worker` (its own container) scans the share every `RUG_SCAN_INTERVAL_S` (10 min), then writes
+pending summaries, yielding to live questions. An outage never crashes it: Ollama down, the share
+unmounted (a scan that would delete most of the catalog is refused) or another scan running just skips
+that step and it tries again next cycle.
+
+### Deploying with Docker Compose
+
+Needs Docker with Compose v2.24+, a Linux host, the NAS mounted on it, and for speed an NVIDIA GPU with
+the [NVIDIA Container Toolkit] (the GPU part is **not verified** by the project's own tests).
+
+```bash
+cd deploy
+cp .env.example .env            # fill in POSTGRES_PASSWORD, RUG_SESSION_SECRET, DOCS_DIR, RUG_HOST, LDAP_*
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build   # drop the gpu file for CPU-only
+docker compose --profile setup run --rm ollama-pull                              # download the models once
+```
+
+Then open `https://<RUG_HOST>/`, sign in with an AD account from the admin group, and grant folders to
+groups under **Admin → Access** (nobody sees any document until you do). Caddy uses its own certificate
+authority (`tls internal`), so browsers warn until people trust its root certificate
+(`docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt .`) or you install a company-CA
+certificate (see the comments in `deploy/Caddyfile`; add HSTS only then).
+
+Services: `caddy` (only ports 80/443 published) → `app` (API + web UI, non-root) and `worker`,
+`postgres` (pgvector), `ollama` (no published port), `backup`. Only Caddy, pinned to `172.28.0.10`, is
+trusted to report client addresses (`RUG_TRUSTED_PROXIES`), so the login throttle and audit log see real
+client addresses.
+
+**NAS mount.** Mount the share read-write on the host, and make the container's user (uid 10001) able to
+write to it, otherwise uploads fail with "permission denied" and nothing else notices. For CIFS:
+`mount -t cifs //nas/documents /mnt/nas/documents -o credentials=/etc/rug-nas.cred,uid=10001,gid=10001,file_mode=0664,dir_mode=0775`
+(NFS: export it so uid 10001 can write). Top-level folders on the share are the permission folders;
+create new ones on the share itself (the app never creates them).
+
+**Models.** `RUG_CHAT_MODEL` / `RUG_EMBED_MODEL` are pulled by `ollama-pull`. Check the chat model tag exists in
+your Ollama before relying on it.
+
+**Changing the embedding model** (or its task prefixes). Vectors from different models are not comparable, so
+the index records which model built it and `rug serve`, `rug worker`, `rug ingest` and `rug summarize` refuse to
+run when the setting differs, naming the fix. To switch: stop `app`, `worker` and `backup`, set the new
+`RUG_EMBED_MODEL` in `.env`, `docker compose --profile setup run --rm ollama-pull`, then
+`docker compose run --rm --no-deps app rug reembed` (slow on a large corpus; if interrupted the index stays marked
+unusable, so just run it again), then start everything. A model with a different vector size needs a schema
+migration as well. An index created before this check existed is assumed to match the current setting (a warning
+is logged); if that is wrong, run `rug reembed`.
+
+**Other host settings.** The stack uses the Docker network `172.28.0.0/24` (Caddy is pinned to `172.28.0.10`):
+change both in `docker-compose.yml` if your LAN already uses that range. The containers run as uid/gid 10001.
+`POSTGRES_PASSWORD` goes into a database URL: use letters and digits only (`openssl rand -hex 24`). Set `TZ` so
+`BACKUP_AT` means your local time (default UTC).
+
+### Backups
+
+The `backup` service writes a custom-format `pg_dump` nightly (`BACKUP_AT`, local time) to `BACKUP_DIR` and
+keeps the newest `BACKUP_KEEP` (14) by count. A dump is checked with `pg_restore --list` before it is
+kept. **Dumps contain the full text of every indexed document plus the audit and question logs: protect the
+folder like the NAS itself.** The NAS files themselves are not backed up by this; the search index can be
+rebuilt from them (`rug ingest`), but users' permissions, the question log and the audit log cannot.
+
+Restore (stop `app`, `worker`, `backup` first for an in-place restore):
+
+```bash
+docker compose run --rm --no-deps --entrypoint sh backup /restore.sh /backups/rug-YYYYMMDDTHHMMSSZ.dump rug --replace
+```
+
+`deploy/smoke.sh` restores the newest dump into a scratch database and compares row counts.
+
+### Smoke test
+
+`deploy/smoke.sh` builds the image and starts the real Caddy and Postgres containers with the test
+harness (mock directory, fake models), then checks: verified HTTPS through Caddy, HTTP→HTTPS redirect,
+the UI, cookie flags, streaming arriving incrementally through the proxy, the download checksum, client
+addresses in the audit log (not Caddy's, not a spoofed header), non-root user, only Caddy publishing ports,
+backup → restore (documents, chunks, audit rows, users, pgvector extension, embeddings) and retention.
+
+### M5 status: what is and is not verified
+
+- Verified here (Docker 29 / Compose 5 in the build environment): the smoke test above (25+ checks), the
+  production image target started with a real (unreachable) LDAP setting (migrations run, `503` for sign-in when
+  the directory is down, the worker survives the missing Ollama, a missing `RUG_SESSION_SECRET` stops the app with a
+  clear message), the 14 browser tests (including the admin screens), the backend tests and the offline eval gate.
+- **Not verified:** sign-in against a real Active Directory (the smoke test uses a mock directory, so the
+  whole production sign-in path over TLS is untested); Ollama, the models and the GPU
+  (`docker compose … gpu.yml`, the NVIDIA Container Toolkit, `ollama-pull`); **Tesseract in the image** (the
+  build environment's network policy blocked Debian's package mirrors, so the smoke image was built with
+  `INSTALL_TESSERACT=0`; the production build path that installs it has not been run here, and
+  documents containing images need it, and the smoke test's corpus contains one, so the smoke stack indexes one file
+  fewer than the synthetic corpus has); the backup scheduler's real daily wake-up (only its next-run arithmetic is
+  checked); the CIFS/NFS mount options on a real NAS; and real answer quality.
+- The image is built as `app` for production; the `smoke` target adds the test harness and must never
+  be deployed.
+- The GitHub Actions workflow has `frontend`, `e2e` and `deploy` jobs, but Actions has not run (billing lock).
+- Known limits carried over: nested AD groups and the primary group are not read from `memberOf`
+  (map `*` for "everyone"); AD group changes apply at the next sign-in.
+
+[NVIDIA Container Toolkit]: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/
 
 ## Development setup
 
